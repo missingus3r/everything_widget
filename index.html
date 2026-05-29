@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>System Dashboard</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="widget">
+
+    <div class="titlebar">
+      <div class="titlebar-left">
+        <span class="titlebar-icon">🖥</span>
+        <span class="titlebar-text">System Dashboard</span>
+      </div>
+      <div class="titlebar-controls">
+        <button class="btn-min" id="btn-min" title="Minimize">─</button>
+        <button class="btn-close" id="btn-close" title="Close">✕</button>
+      </div>
+    </div>
+
+    <div class="tabs">
+      <button class="tab active" data-tab="dashboard">Dashboard</button>
+      <button class="tab" data-tab="keys">API Keys</button>
+      <button class="tab" data-tab="settings">Settings</button>
+    </div>
+
+    <div class="screen" id="tab-dashboard">
+
+      <!-- Clock + date -->
+      <section class="clock-section">
+        <div class="clock" id="clock">--:--:--</div>
+        <div class="date" id="date">—</div>
+      </section>
+
+      <!-- Weather -->
+      <section class="card weather-card">
+        <div class="card-head">
+          <span class="card-title">Clima</span>
+          <span class="card-head-right">
+            <span class="card-sub" id="weather-loc">—</span>
+            <button id="weather-refresh" class="mini-refresh" title="Actualizar clima">↻</button>
+          </span>
+        </div>
+        <div class="weather-grid" id="weather-grid">
+          <div class="weather-loading">Cargando clima…</div>
+        </div>
+      </section>
+
+      <!-- System stats -->
+      <section class="card">
+        <div class="card-head">
+          <span class="card-title">Sistema</span>
+          <span class="card-sub" id="sys-sub">—</span>
+        </div>
+
+        <div class="stat-row">
+          <div class="stat-label">CPU</div>
+          <div class="stat-bar"><div id="cpu-fill" class="bar-fill"></div></div>
+          <div class="stat-val" id="cpu-val">—</div>
+        </div>
+
+        <div class="stat-row">
+          <div class="stat-label">RAM</div>
+          <div class="stat-bar"><div id="ram-fill" class="bar-fill"></div></div>
+          <div class="stat-val" id="ram-val">—</div>
+        </div>
+
+        <div id="disks"></div>
+
+        <div class="stat-row mini-grid">
+          <div class="mini">
+            <div class="mini-label">Temp</div>
+            <div class="mini-val" id="temp-val">—</div>
+          </div>
+          <div class="mini">
+            <div class="mini-label">Uptime</div>
+            <div class="mini-val" id="uptime-val">—</div>
+          </div>
+          <div class="mini" id="batt-cell" hidden>
+            <div class="mini-label">Batería</div>
+            <div class="mini-val" id="batt-val">—</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Network + Speedtest -->
+      <section class="card">
+        <div class="card-head">
+          <span class="card-title">Red</span>
+          <span class="card-sub" id="net-sub">—</span>
+        </div>
+
+        <div class="net-live">
+          <div class="net-cell">
+            <span class="net-arrow down">↓</span>
+            <span class="net-num" id="net-down">— Mbps</span>
+            <span class="net-tag">en vivo</span>
+          </div>
+          <div class="net-cell">
+            <span class="net-arrow up">↑</span>
+            <span class="net-num" id="net-up">— Mbps</span>
+            <span class="net-tag">en vivo</span>
+          </div>
+        </div>
+
+        <button id="speedtest-btn" class="action-btn">⚡ Speedtest</button>
+        <div id="speedtest-status" class="speedtest-status"></div>
+
+        <div class="st-block">
+          <div class="st-block-head">
+            <span class="st-block-label">Última</span>
+            <span class="st-block-when" id="st-last-when">—</span>
+          </div>
+          <div class="speedtest-result">
+            <div class="st-cell"><span class="st-label">↓</span><span id="st-last-down" class="st-val">—</span></div>
+            <div class="st-cell"><span class="st-label">↑</span><span id="st-last-up" class="st-val">—</span></div>
+            <div class="st-cell"><span class="st-label">ping</span><span id="st-last-ping" class="st-val">—</span></div>
+          </div>
+        </div>
+
+        <div class="st-block">
+          <div class="st-block-head">
+            <span class="st-block-label">Mejor</span>
+            <button id="st-reset" class="st-reset-btn" title="Reiniciar récords">⟲ reset</button>
+          </div>
+          <div class="speedtest-result best">
+            <div class="st-cell"><span class="st-label">↓</span><span id="st-best-down" class="st-val">—</span></div>
+            <div class="st-cell"><span class="st-label">↑</span><span id="st-best-up" class="st-val">—</span></div>
+            <div class="st-cell"><span class="st-label">ping</span><span id="st-best-ping" class="st-val">—</span></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- AI Usage -->
+      <section class="card ai-card">
+        <div class="card-head">
+          <span class="card-title">AI Usage</span>
+          <span class="card-head-right">
+            <span class="card-sub" id="ai-next" title="Próxima actualización automática">próx. —</span>
+            <button id="ai-refresh" class="mini-refresh" title="Actualizar">↻</button>
+          </span>
+        </div>
+        <div id="ai-content" class="ai-content">
+          <div class="ai-loading">Cargando uso de IA…</div>
+        </div>
+      </section>
+
+      <div class="footer">
+        <span id="footer-updated">—</span>
+        <span class="footer-tag">v1.0</span>
+      </div>
+    </div>
+
+    <div class="screen hidden" id="tab-keys">
+      <div class="keys-content">
+        <div class="keys-list" id="keys-list"></div>
+        <div class="key-add">
+          <div class="key-add-title">Agregar key</div>
+          <input id="key-name" class="key-input" placeholder="Nombre (ej. ElevenLabs)" autocomplete="off">
+          <input id="key-value" class="key-input" type="password" placeholder="API key" autocomplete="off">
+          <button id="key-add-btn" class="key-add-btn">+ Agregar</button>
+          <div class="key-status" id="key-status"></div>
+          <div class="key-hint">
+            Tip: para que aparezca ElevenLabs en el dashboard, guardá una key con nombre
+            exactamente <code>ElevenLabs</code>.
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="screen hidden" id="tab-settings">
+      <div class="settings-content">
+        <label class="setting-row" for="setting-autolaunch">
+          <input type="checkbox" id="setting-autolaunch" class="setting-checkbox">
+          <span class="setting-text">
+            <span class="setting-label">Iniciar al inicio</span>
+            <span class="setting-desc">Lanza el widget automáticamente cuando inicias sesión en Windows (modo oculto, se queda en background hasta que lo abras).</span>
+          </span>
+        </label>
+        <div class="setting-status" id="setting-status"></div>
+      </div>
+    </div>
+
+  </div>
+
+  <script src="renderer.js"></script>
+</body>
+</html>

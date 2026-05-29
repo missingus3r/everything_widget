@@ -1,0 +1,15 @@
+# Dependencies
+node_modules/
+
+# Secrets — NEVER commit
+config.json
+.creds
+
+# Finances data
+*.sqlite
+finances.sqlite
+
+# Logs / OS
+*.log
+.DS_Store
+Thumbs.db

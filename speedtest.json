@@ -1,0 +1,22 @@
+{
+  "last": {
+    "pingMs": 99,
+    "downloadMbps": 733.2,
+    "uploadMbps": 104.8,
+    "at": 1779318910654
+  },
+  "best": {
+    "downloadMbps": {
+      "value": 733.2,
+      "at": 1779318910654
+    },
+    "uploadMbps": {
+      "value": 105,
+      "at": 1779315686568
+    },
+    "pingMs": {
+      "value": 85,
+      "at": 1779234532023
+    }
+  }
+}

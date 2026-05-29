@@ -1,0 +1,9 @@
+{
+  "weather": {
+    "latitude": -34.9011,
+    "longitude": -56.1645,
+    "label": "Montevideo, UY"
+  },
+  "refreshMinutesAI": 15,
+  "elevenLabsApiKey": ""
+}
