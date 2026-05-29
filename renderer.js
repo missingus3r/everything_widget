@@ -40,6 +40,7 @@ document.getElementById('btn-close').addEventListener('click', () => window.api.
 const tabButtons = document.querySelectorAll('.tab');
 const tabPanels = {
   dashboard: document.getElementById('tab-dashboard'),
+  finanzas: document.getElementById('tab-finanzas'),
   keys: document.getElementById('tab-keys'),
   settings: document.getElementById('tab-settings'),
 };
@@ -50,6 +51,7 @@ tabButtons.forEach((btn) => {
     Object.entries(tabPanels).forEach(([name, el]) => {
       el.classList.toggle('hidden', name !== target);
     });
+    if (target === 'finanzas') enterFinanzas();
     if (target === 'keys') loadKeys();
     if (target === 'settings') loadSettings();
     adjustWindowSize();
@@ -884,6 +886,258 @@ keyAddBtn.addEventListener('click', async () => {
 
 keyValue.addEventListener('keydown', (e) => {
   if (e.key === 'Enter') keyAddBtn.click();
+});
+
+// ── Finanzas ───────────────────────────────────────────────────
+const finLock      = $('fin-lock');
+const finContent   = $('fin-content');
+const finMaster    = $('fin-master');
+const finUnlockBtn = $('fin-unlock-btn');
+const finLockStat  = $('fin-lock-status');
+const finAccountsEl = $('fin-accounts');
+let finUnlocked = false;
+
+function setFinLockStatus(msg, kind) {
+  finLockStat.textContent = msg || '';
+  finLockStat.className = 'key-status' + (kind ? ` ${kind}` : '');
+}
+
+function fmtMoney(n, cur) {
+  const sym = cur === 'USD' ? 'U$S' : '$';
+  const v = Number(n).toLocaleString('es-UY', {
+    minimumFractionDigits: 2, maximumFractionDigits: 2,
+  });
+  return `${sym} ${v}`;
+}
+
+function fmtDelta(d, cur) {
+  if (d == null) return '<span class="fin-delta none">nuevo</span>';
+  if (Math.abs(d) < 0.005) return '<span class="fin-delta flat">=</span>';
+  const sym = cur === 'USD' ? 'U$S' : '$';
+  const abs = Math.abs(d).toLocaleString('es-UY', {
+    minimumFractionDigits: 2, maximumFractionDigits: 2,
+  });
+  const up = d > 0;
+  return `<span class="fin-delta ${up ? 'up' : 'down'}">${up ? '+' : '−'}${sym} ${abs}</span>`;
+}
+
+function finTimeAgo(ts) {
+  if (!ts) return 'sin datos';
+  const s = Math.floor((Date.now() - ts) / 1000);
+  if (s < 60) return 'recién';
+  const m = Math.floor(s / 60);
+  if (m < 60) return `hace ${m}m`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `hace ${h}h`;
+  const d = Math.floor(h / 24);
+  return `hace ${d}d`;
+}
+
+async function enterFinanzas() {
+  try {
+    const st = await window.api.finances.status();
+    finUnlocked = !!st.unlocked;
+  } catch { finUnlocked = false; }
+
+  if (finUnlocked) {
+    finLock.classList.add('hidden');
+    finContent.classList.remove('hidden');
+    await renderFinanzas();
+  } else {
+    finContent.classList.add('hidden');
+    finLock.classList.remove('hidden');
+    finMaster.value = '';
+    setFinLockStatus('');
+    setTimeout(() => finMaster.focus(), 50);
+  }
+  adjustWindowSize();
+}
+
+async function unlockFinanzas() {
+  const pass = finMaster.value;
+  if (!pass) { setFinLockStatus('Ingresá la master password', 'error'); return; }
+  finUnlockBtn.disabled = true;
+  setFinLockStatus('Desbloqueando…');
+  try {
+    const r = await window.api.finances.unlock(pass);
+    if (r && r.ok) {
+      finUnlocked = true;
+      finMaster.value = '';
+      finLock.classList.add('hidden');
+      finContent.classList.remove('hidden');
+      await renderFinanzas();
+    } else {
+      setFinLockStatus((r && r.error) || 'No se pudo desbloquear', 'error');
+    }
+  } catch {
+    setFinLockStatus('Error al desbloquear', 'error');
+  } finally {
+    finUnlockBtn.disabled = false;
+    adjustWindowSize();
+  }
+}
+
+function accountCardHtml(a) {
+  const rows = a.currencies.map((cur) => {
+    const key = cur.toLowerCase();
+    const cell = a[key];
+    const amount = cell ? fmtMoney(cell.value, cur) : `<span class="fin-amt-empty">—</span>`;
+    const delta = cell ? fmtDelta(cell.delta, cur) : '';
+    return `
+      <div class="fin-row">
+        <span class="fin-cur">${cur === 'USD' ? 'U$S' : '$U'}</span>
+        <span class="fin-amt">${amount}</span>
+        ${delta}
+      </div>`;
+  }).join('');
+
+  let controls = '';
+  if (a.kind === 'manual') {
+    const inputs = a.currencies.map((cur) => `
+      <input class="fin-input js-manual" data-cur="${cur}" type="text" inputmode="decimal"
+             placeholder="${cur === 'USD' ? 'Dólares' : 'Pesos'}" autocomplete="off">`).join('');
+    controls = `
+      <div class="fin-manual-row">
+        ${inputs}
+        <button class="fin-btn js-save-manual">Guardar</button>
+      </div>`;
+  } else {
+    const credsBadge = a.hasCreds
+      ? '<span class="fin-badge ok">credenciales ✓</span>'
+      : '<span class="fin-badge warn">sin credenciales</span>';
+    controls = `
+      <div class="fin-bank-row">
+        ${credsBadge}
+        <button class="fin-btn js-creds-toggle">${a.hasCreds ? 'Editar' : 'Configurar'} login</button>
+        <button class="fin-btn primary js-refresh">↻ Actualizar</button>
+      </div>
+      <div class="fin-creds hidden">
+        <input class="fin-input js-cred-user" type="text" placeholder="Usuario / documento" autocomplete="off">
+        <input class="fin-input js-cred-pass" type="password" placeholder="Contraseña" autocomplete="off">
+        <button class="fin-btn js-save-creds">Guardar credenciales</button>
+      </div>`;
+  }
+
+  return `
+    <div class="fin-card" data-id="${a.id}" data-kind="${a.kind}">
+      <div class="fin-card-head">
+        <span class="fin-card-name">${escapeHtml(a.name)}</span>
+        <span class="fin-card-time">${finTimeAgo(a.ts)}</span>
+      </div>
+      <div class="fin-rows">${rows}</div>
+      ${controls}
+      <div class="fin-card-status"></div>
+    </div>`;
+}
+
+function setCardStatus(card, msg, kind) {
+  const el = card.querySelector('.fin-card-status');
+  if (!el) return;
+  el.textContent = msg || '';
+  el.className = 'fin-card-status' + (kind ? ` ${kind}` : '');
+}
+
+async function renderFinanzas() {
+  let state;
+  try {
+    state = await window.api.finances.getState();
+  } catch {
+    finAccountsEl.innerHTML = '<div class="keys-empty">Error cargando finanzas.</div>';
+    return;
+  }
+  if (!state || !state.unlocked) { finUnlocked = false; return enterFinanzas(); }
+
+  const accounts = state.accounts || [];
+
+  // Totals per currency across all accounts.
+  let totUyu = 0, totUsd = 0;
+  for (const a of accounts) {
+    if (a.uyu) totUyu += a.uyu.value;
+    if (a.usd) totUsd += a.usd.value;
+  }
+  $('fin-total').innerHTML =
+    `${fmtMoney(totUyu, 'UYU')}<span class="fin-total-sep">·</span>${fmtMoney(totUsd, 'USD')}`;
+
+  finAccountsEl.innerHTML = accounts.map(accountCardHtml).join('');
+  adjustWindowSize();
+
+  finAccountsEl.querySelectorAll('.fin-card').forEach((card) => {
+    const id = card.dataset.id;
+
+    const saveManualBtn = card.querySelector('.js-save-manual');
+    if (saveManualBtn) {
+      saveManualBtn.addEventListener('click', async () => {
+        const payload = { accountId: id, uyu: null, usd: null };
+        card.querySelectorAll('.js-manual').forEach((inp) => {
+          const cur = inp.dataset.cur;
+          const v = inp.value.trim();
+          if (v !== '') payload[cur.toLowerCase()] = v.replace(/\./g, '').replace(',', '.');
+        });
+        if (payload.uyu == null && payload.usd == null) {
+          setCardStatus(card, 'Ingresá al menos un monto', 'error');
+          return;
+        }
+        saveManualBtn.disabled = true;
+        setCardStatus(card, 'Guardando…');
+        try {
+          const r = await window.api.finances.saveManual(payload);
+          if (r && r.ok) { await renderFinanzas(); }
+          else setCardStatus(card, (r && r.error) || 'Error', 'error');
+        } catch { setCardStatus(card, 'Error', 'error'); }
+        finally { saveManualBtn.disabled = false; }
+      });
+    }
+
+    const credsToggle = card.querySelector('.js-creds-toggle');
+    if (credsToggle) {
+      credsToggle.addEventListener('click', () => {
+        card.querySelector('.fin-creds').classList.toggle('hidden');
+        adjustWindowSize();
+      });
+    }
+
+    const saveCredsBtn = card.querySelector('.js-save-creds');
+    if (saveCredsBtn) {
+      saveCredsBtn.addEventListener('click', async () => {
+        const user = card.querySelector('.js-cred-user').value.trim();
+        const pass = card.querySelector('.js-cred-pass').value;
+        if (!user || !pass) { setCardStatus(card, 'Usuario y contraseña requeridos', 'error'); return; }
+        saveCredsBtn.disabled = true;
+        setCardStatus(card, 'Guardando…');
+        try {
+          const r = await window.api.finances.saveCreds({ accountId: id, user, pass });
+          if (r && r.ok) { await renderFinanzas(); }
+          else setCardStatus(card, (r && r.error) || 'Error', 'error');
+        } catch { setCardStatus(card, 'Error', 'error'); }
+        finally { saveCredsBtn.disabled = false; }
+      });
+    }
+
+    const refreshBtn = card.querySelector('.js-refresh');
+    if (refreshBtn) {
+      refreshBtn.addEventListener('click', async () => {
+        refreshBtn.disabled = true;
+        const orig = refreshBtn.textContent;
+        refreshBtn.textContent = '⏳ Capturando…';
+        setCardStatus(card, 'Se abrió la ventana del banco. Logueate, completá el 2FA y capturá el saldo.');
+        try {
+          const r = await window.api.finances.refreshBank(id);
+          if (r && r.ok) { setCardStatus(card, 'Saldo guardado ✓', 'success'); await renderFinanzas(); }
+          else if (r && r.cancelled) setCardStatus(card, 'Cancelado', '');
+          else setCardStatus(card, (r && r.error) || 'No se pudo capturar', 'error');
+        } catch { setCardStatus(card, 'Error', 'error'); }
+        finally { refreshBtn.disabled = false; refreshBtn.textContent = orig; }
+      });
+    }
+  });
+}
+
+finUnlockBtn.addEventListener('click', unlockFinanzas);
+finMaster.addEventListener('keydown', (e) => { if (e.key === 'Enter') unlockFinanzas(); });
+$('fin-lock-now').addEventListener('click', async () => {
+  try { await window.api.finances.lock(); } catch {}
+  finUnlocked = false;
+  enterFinanzas();
 });
 
 // ── Settings ───────────────────────────────────────────────────

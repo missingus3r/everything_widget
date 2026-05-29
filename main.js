@@ -10,6 +10,7 @@ const { fetchWeather } = require('./weather');
 const { runSpeedtest } = require('./speedtest');
 const speedtestHistory = require('./speedtestHistory');
 const { readLocalUsage } = require('./localUsage');
+const finances = require('./finances');
 
 let win = null;
 let tray = null;
@@ -291,6 +292,21 @@ ipcMain.handle('save-api-keys', (_event, keys) => {
   saveConfig(patch);
   return list;
 });
+
+// ── Finanzas ───────────────────────────────────────────────────
+ipcMain.handle('finances:status', () => finances.status());
+ipcMain.handle('finances:unlock', (_e, masterPass) => finances.unlock(masterPass));
+ipcMain.handle('finances:lock', () => { finances.lock(); return { ok: true }; });
+ipcMain.handle('finances:get-state', () => finances.getState());
+ipcMain.handle('finances:save-creds', (_e, { accountId, user, pass }) =>
+  finances.saveCreds(accountId, user, pass));
+ipcMain.handle('finances:save-manual', (_e, { accountId, uyu, usd }) =>
+  finances.saveManual(accountId, uyu, usd));
+ipcMain.handle('finances:refresh-bank', (_e, accountId) =>
+  finances.refreshBank(accountId, win));
+
+// Lock the Finanzas section when the app quits (key only lives in memory anyway).
+app.on('before-quit', () => { try { finances.lock(); } catch {} });
 
 // ── Auto-launch ────────────────────────────────────────────────
 function loginItemOptions(extra = {}) {

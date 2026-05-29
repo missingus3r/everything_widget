@@ -814,4 +814,105 @@ html, body {
 .setting-status.error { color: #ef4444; }
 .setting-status.success { color: #4ade80; }
 
+/* ── Finanzas ───────────────────────────────────────────────── */
+#tab-finanzas { padding: 12px; display: flex; flex-direction: column; gap: 12px; }
+
+.fin-lock {
+  display: flex; flex-direction: column; gap: 10px;
+  align-items: center; text-align: center;
+  padding: 28px 18px;
+  background: rgba(96,165,250,0.04);
+  border: 1px dashed rgba(96,165,250,0.2);
+  border-radius: 12px;
+}
+.fin-lock-icon { font-size: 30px; }
+.fin-lock-title { font-size: 15px; font-weight: 700; color: #93c5fd; }
+.fin-lock-desc { font-size: 11.5px; color: #a1a1aa; line-height: 1.4; }
+.fin-lock .key-input { width: 100%; box-sizing: border-box; max-width: 260px; text-align: center; }
+.fin-lock .key-add-btn { width: 100%; max-width: 260px; }
+.fin-lock .key-hint { max-width: 280px; }
+
+.fin-content { display: flex; flex-direction: column; gap: 10px; }
+.fin-head {
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 12px;
+  background: rgba(74,222,128,0.06);
+  border: 1px solid rgba(74,222,128,0.18);
+  border-radius: 10px;
+}
+.fin-total-label {
+  font-size: 10px; font-weight: 700; color: #86efac;
+  text-transform: uppercase; letter-spacing: 0.6px;
+}
+.fin-total { margin-left: auto; font-size: 14px; font-weight: 700; color: #e4e4e7; }
+.fin-total-sep { margin: 0 6px; color: #52525b; }
+
+.fin-accounts { display: flex; flex-direction: column; gap: 8px; }
+.fin-card {
+  background: rgba(255,255,255,0.025);
+  border: 1px solid rgba(255,255,255,0.07);
+  border-radius: 10px;
+  padding: 10px 12px;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.fin-card-head { display: flex; align-items: baseline; gap: 8px; }
+.fin-card-name { font-size: 13px; font-weight: 700; color: #e4e4e7; }
+.fin-card-time { margin-left: auto; font-size: 10px; color: #71717a; }
+
+.fin-rows { display: flex; flex-direction: column; gap: 4px; }
+.fin-row { display: flex; align-items: center; gap: 8px; }
+.fin-cur {
+  font-size: 10px; font-weight: 700; color: #93c5fd;
+  width: 30px; flex-shrink: 0;
+}
+.fin-amt { font-size: 13px; font-weight: 600; color: #e4e4e7; font-variant-numeric: tabular-nums; }
+.fin-amt-empty { color: #52525b; }
+.fin-delta {
+  margin-left: auto; font-size: 11px; font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.fin-delta.up { color: #4ade80; }
+.fin-delta.down { color: #ef4444; }
+.fin-delta.flat { color: #71717a; }
+.fin-delta.none { color: #71717a; font-weight: 500; font-style: italic; }
+
+.fin-manual-row, .fin-bank-row, .fin-creds {
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+}
+.fin-creds { margin-top: 2px; }
+.fin-input {
+  flex: 1 1 90px; min-width: 0;
+  background: rgba(0,0,0,0.3);
+  border: 1px solid rgba(255,255,255,0.08);
+  color: #e4e4e7;
+  padding: 6px 8px; font-size: 12px;
+  border-radius: 6px; outline: none; font-family: inherit;
+}
+.fin-input:focus { border-color: rgba(96,165,250,0.5); }
+.fin-input::placeholder { color: #52525b; }
+
+.fin-btn {
+  background: rgba(96,165,250,0.15);
+  border: 1px solid rgba(96,165,250,0.3);
+  color: #93c5fd;
+  padding: 6px 10px; font-size: 11.5px; font-weight: 600;
+  border-radius: 6px; cursor: pointer; white-space: nowrap;
+  transition: background 0.15s;
+}
+.fin-btn:hover { background: rgba(96,165,250,0.25); color: #e4e4e7; }
+.fin-btn.primary { background: rgba(74,222,128,0.18); border-color: rgba(74,222,128,0.35); color: #86efac; }
+.fin-btn.primary:hover { background: rgba(74,222,128,0.3); color: #e4e4e7; }
+.fin-btn:disabled { opacity: 0.55; cursor: default; }
+
+.fin-badge {
+  font-size: 10px; font-weight: 700; padding: 2px 7px; border-radius: 999px;
+  text-transform: uppercase; letter-spacing: 0.4px;
+}
+.fin-badge.ok { color: #86efac; background: rgba(74,222,128,0.12); }
+.fin-badge.warn { color: #fbbf24; background: rgba(251,191,36,0.12); }
+
+.fin-card-status { font-size: 10.5px; color: #a1a1aa; min-height: 0; line-height: 1.4; }
+.fin-card-status.error { color: #ef4444; }
+.fin-card-status.success { color: #4ade80; }
+
 ::-webkit-scrollbar { width: 0; height: 0; }

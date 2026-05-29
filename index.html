@@ -22,6 +22,7 @@
 
     <div class="tabs">
       <button class="tab active" data-tab="dashboard">Dashboard</button>
+      <button class="tab" data-tab="finanzas">Finanzas</button>
       <button class="tab" data-tab="keys">API Keys</button>
       <button class="tab" data-tab="settings">Settings</button>
     </div>
@@ -150,6 +151,35 @@
       <div class="footer">
         <span id="footer-updated">—</span>
         <span class="footer-tag">v1.0</span>
+      </div>
+    </div>
+
+    <div class="screen hidden" id="tab-finanzas">
+      <!-- Lock screen: master password gate -->
+      <div class="fin-lock" id="fin-lock">
+        <div class="fin-lock-icon">🔒</div>
+        <div class="fin-lock-title" id="fin-lock-title">Finanzas</div>
+        <div class="fin-lock-desc" id="fin-lock-desc">
+          Ingresá tu master password para desbloquear esta sección.
+        </div>
+        <input id="fin-master" class="key-input" type="password"
+               placeholder="Master password" autocomplete="off">
+        <button id="fin-unlock-btn" class="key-add-btn">Desbloquear</button>
+        <div class="key-status" id="fin-lock-status"></div>
+        <div class="key-hint">
+          La master password no se guarda en ningún lado. Encripta tus credenciales
+          bancarias y se pide cada vez que abrís el widget.
+        </div>
+      </div>
+
+      <!-- Unlocked content -->
+      <div class="fin-content hidden" id="fin-content">
+        <div class="fin-head">
+          <span class="fin-total-label">Total estimado</span>
+          <span class="fin-total" id="fin-total">—</span>
+          <button id="fin-lock-now" class="mini-refresh" title="Bloquear sección">🔒</button>
+        </div>
+        <div id="fin-accounts" class="fin-accounts"></div>
       </div>
     </div>
 
