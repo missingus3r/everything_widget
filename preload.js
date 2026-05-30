@@ -24,6 +24,7 @@ contextBridge.exposeInMainWorld('api', {
 
   finances: {
     getState:     ()        => ipcRenderer.invoke('finances:get-state'),
+    getHistory:   ()        => ipcRenderer.invoke('finances:get-history'),
     saveManual:   (payload) => ipcRenderer.invoke('finances:save-manual', payload),
     clearAccount: (id)      => ipcRenderer.invoke('finances:clear-account', id),
     clearAll:     ()        => ipcRenderer.invoke('finances:clear-all'),

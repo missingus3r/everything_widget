@@ -303,6 +303,7 @@ ipcMain.handle('save-api-keys', (_event, keys) => {
 
 // ── Finanzas ───────────────────────────────────────────────────
 ipcMain.handle('finances:get-state', () => finances.getState());
+ipcMain.handle('finances:get-history', () => finances.getHistory());
 ipcMain.handle('finances:save-manual', (_e, { accountId, uyu, usd }) =>
   finances.saveManual(accountId, uyu, usd));
 ipcMain.handle('finances:clear-account', (_e, accountId) => finances.clearAccount(accountId));

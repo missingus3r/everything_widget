@@ -1013,6 +1013,14 @@ html, body {
   font-variant-numeric: tabular-nums; min-width: 64px; text-align: right;
 }
 .fin-total-delta .fin-delta { margin-left: 0; font-size: 10px; }
+.fin-total-conv {
+  margin-top: 2px;
+  font-size: 9.5px; font-weight: 600;
+  color: rgba(255,255,255,0.55);
+  font-variant-numeric: tabular-nums;
+  text-align: right; white-space: nowrap;
+}
+.fin-total-conv:empty { display: none; }
 .fin-total-row .fin-btn.danger { align-self: center; }
 
 .fin-accounts {
@@ -1055,7 +1063,9 @@ a.fin-card-name:hover .fin-site-arrow { opacity: 1; }
 .fin-delta.none { color: #71717a; font-weight: 500; font-style: italic; }
 
 .fin-inputs-row { display: flex; gap: 6px; }
-.fin-actions-row { display: flex; gap: 6px; }
+/* Push the actions to the bottom so cards with fewer currency rows (e.g. BROU,
+   UYU-only) keep their Guardar/Limpiar aligned with the multi-currency cards. */
+.fin-actions-row { display: flex; gap: 6px; margin-top: auto; }
 .fin-actions-row .fin-btn { flex: 1; text-align: center; }
 .fin-input {
   flex: 1 1 0; min-width: 0;
@@ -1150,6 +1160,7 @@ a.fin-card-name:hover .fin-site-arrow { opacity: 1; }
 }
 .fin-exp-kind-servicio { color: #93c5fd; background: rgba(96,165,250,0.15); }
 .fin-exp-kind-gasto { color: #fca5a5; background: rgba(239,68,68,0.14); }
+.fin-exp-kind-suscripcion { color: #c4b5fd; background: rgba(167,139,250,0.16); }
 .fin-exp-name { font-size: 12.5px; font-weight: 600; color: #e4e4e7; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .fin-exp-day-badge { font-size: 9.5px; color: #a1a1aa; background: rgba(255,255,255,0.05); padding: 1px 6px; border-radius: 4px; flex-shrink: 0; }
 .fin-exp-amt { margin-left: auto; font-size: 12.5px; font-weight: 700; color: #e4e4e7; font-variant-numeric: tabular-nums; flex-shrink: 0; }
@@ -1215,6 +1226,64 @@ a.fin-card-name:hover .fin-site-arrow { opacity: 1; }
 .fin-exp-status { font-size: 10.5px; color: #a1a1aa; min-height: 0; line-height: 1.4; }
 .fin-exp-status.error { color: #ef4444; }
 
+/* ── Finanzas: gráficas ─────────────────────────────────────── */
+.fin-charts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+}
+.fin-chart {
+  background: rgba(255,255,255,0.025);
+  border: 1px solid rgba(255,255,255,0.07);
+  border-radius: 10px;
+  padding: 10px 12px;
+  display: flex; flex-direction: column; gap: 8px;
+  min-width: 0;
+}
+.fin-chart-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.fin-chart-title {
+  font-size: 10.5px; font-weight: 700; color: #c4b5fd;
+  text-transform: uppercase; letter-spacing: 0.5px;
+}
+.fin-chart-meta { font-size: 11px; font-weight: 700; color: #e4e4e7; font-variant-numeric: tabular-nums; }
+.fin-chart-title .fin-chart-meta { color: #71717a; font-weight: 600; margin-left: 4px; }
+.fin-chart-empty { font-size: 10.5px; color: #71717a; padding: 10px 0; text-align: center; }
+
+.fin-chart-svg { width: 100%; height: 70px; display: block; }
+.fin-area-fill { fill: rgba(74,222,128,0.14); stroke: none; }
+.fin-area-line { fill: none; stroke: #4ade80; stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+.fin-chart-foot {
+  display: flex; justify-content: space-between;
+  font-size: 9px; color: #71717a; font-variant-numeric: tabular-nums;
+}
+
+.fin-bars { display: flex; flex-direction: column; gap: 6px; }
+.fin-bar-row { display: flex; align-items: center; gap: 8px; }
+.fin-bar-label {
+  font-size: 10.5px; color: #a1a1aa; font-weight: 600;
+  width: 78px; flex-shrink: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.fin-bar-track {
+  flex: 1; height: 8px; min-width: 0;
+  background: rgba(255,255,255,0.05);
+  border-radius: 4px; overflow: hidden;
+}
+.fin-bar-fill {
+  display: block; height: 100%; border-radius: 4px;
+  background: linear-gradient(90deg, #60a5fa, #93c5fd);
+  transition: width 0.4s ease;
+}
+.fin-bar-fill.green { background: linear-gradient(90deg, #22c55e, #4ade80); }
+.fin-bar-fill.amber { background: linear-gradient(90deg, #f59e0b, #fbbf24); }
+.fin-bar-fill.blue  { background: linear-gradient(90deg, #60a5fa, #93c5fd); }
+.fin-bar-fill.violet { background: linear-gradient(90deg, #8b5cf6, #c4b5fd); }
+.fin-bar-val {
+  font-size: 10.5px; font-weight: 700; color: #e4e4e7;
+  font-variant-numeric: tabular-nums;
+  width: 92px; flex-shrink: 0; text-align: right;
+}
+
 /* In-app confirmation modal (replaces native confirm(), which loses focus on
    this frameless/transparent/always-on-top window). */
 .fin-modal {
@@ -1233,3 +1302,34 @@ a.fin-card-name:hover .fin-site-arrow { opacity: 1; }
 .fin-modal-actions { display: flex; gap: 8px; justify-content: flex-end; }
 
 ::-webkit-scrollbar { width: 0; height: 0; }
+
+/* ── Fill empty vertical space ──────────────────────────────────
+   The dash-row cards stretch to the tallest sibling (Red), the AI and
+   Mercado columns stretch to their taller column, and the shorter side's
+   content grows to fill instead of leaving a gap at the bottom. */
+
+/* Clima: the weather grid fills the card; both rows share the height. */
+.weather-card .weather-grid { flex: 1 1 auto; grid-auto-rows: 1fr; }
+.weather-cell.now { align-items: center; }
+
+/* Sistema: the gauges absorb the slack and center between head and stats. */
+.sys-card .gauge-row { flex: 1 1 auto; align-items: center; margin: 0; }
+.sys-card #disks:empty { display: none; }
+
+/* AI usage: stretch both columns; the Local Tokens sparkline fills the rest. */
+.ai-content { align-items: stretch; }
+.local-sparkline { flex: 1 1 auto; height: auto; min-height: 56px; }
+.spark-col { height: 100%; }
+.spark-track { flex: 1 1 auto; height: auto; min-height: 40px; }
+
+/* Mercado: equal-height columns; each list spreads its rows to fill. */
+.mkt-cols { align-items: stretch; }
+.mkt-list {
+  flex: 1 1 auto;
+  display: flex; flex-direction: column;
+  justify-content: space-between; gap: 5px;
+}
+
+/* Finanzas dashboard: the two total banners grow to fill the summary card. */
+.fin-summary-card .fin-total-banner,
+.fin-summary-card .fin-exp-total-banner { flex: 1 1 0; min-height: 76px; }

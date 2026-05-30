@@ -60,6 +60,41 @@ async function getState() {
   };
 }
 
+// Aggregate savings over time: at each distinct snapshot timestamp, sum the
+// most recent known value of every account (a running total step series).
+// Returns [{ ts, uyu, usd }] oldest first.
+async function getHistory() {
+  await ensureDb();
+  const series = {};
+  for (const a of ACCOUNTS) series[a.id] = db.history(a.id); // oldest first
+
+  const allTs = Array.from(
+    new Set(Object.values(series).flat().map((r) => r.ts))
+  ).sort((a, b) => a - b);
+
+  const idx = {};
+  const last = {};
+  for (const id of Object.keys(series)) idx[id] = 0;
+
+  const points = [];
+  for (const ts of allTs) {
+    for (const id of Object.keys(series)) {
+      const arr = series[id];
+      while (idx[id] < arr.length && arr[idx[id]].ts <= ts) {
+        last[id] = arr[idx[id]];
+        idx[id] += 1;
+      }
+    }
+    let uyu = 0, usd = 0;
+    for (const id of Object.keys(last)) {
+      uyu += last[id].uyu || 0;
+      usd += last[id].usd || 0;
+    }
+    points.push({ ts, uyu, usd });
+  }
+  return points;
+}
+
 async function setHidden(hidden) {
   await ensureDb();
   db.setSetting('hidden', hidden ? '1' : '0');
@@ -104,7 +139,7 @@ async function clearAll() {
 }
 
 const EXPENSE_CURRENCIES = ['UYU', 'USD'];
-const EXPENSE_KINDS = ['servicio', 'gasto'];
+const EXPENSE_KINDS = ['servicio', 'gasto', 'suscripcion'];
 
 async function listExpenses() {
   await ensureDb();
@@ -151,6 +186,6 @@ async function deleteExpense(id) {
 }
 
 module.exports = {
-  getState, saveManual, clearAccount, clearAll, setHidden,
+  getState, getHistory, saveManual, clearAccount, clearAll, setHidden,
   listExpenses, addExpense, updateExpense, deleteExpense,
 };

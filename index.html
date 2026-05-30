@@ -52,7 +52,7 @@
       </section>
 
       <!-- System stats -->
-      <section class="card">
+      <section class="card sys-card">
         <div class="card-head">
           <span class="card-title">Sistema</span>
           <span class="card-sub" id="sys-sub">—</span>
@@ -200,7 +200,7 @@
           <span class="card-sub">ver detalle →</span>
         </div>
         <div class="fin-total-banner">
-          <span class="fin-total-label">Total estimado</span>
+          <span class="fin-total-label">Ahorros totales</span>
           <div class="fin-total-lines">
             <div class="fin-total-line">
               <span class="fin-total-cur">$U</span>
@@ -210,6 +210,7 @@
               <span class="fin-total-cur">U$S</span>
               <span class="fin-total-amt" id="fin-sum-usd">—</span>
             </div>
+            <div class="fin-total-conv" id="fin-sum-conv"></div>
           </div>
         </div>
         <div class="fin-exp-total-banner">
@@ -223,6 +224,7 @@
               <span class="fin-total-cur">U$S</span>
               <span class="fin-total-amt" id="fin-sum-svc-usd">—</span>
             </div>
+            <div class="fin-total-conv" id="fin-sum-svc-conv"></div>
           </div>
         </div>
       </section>
@@ -236,12 +238,21 @@
     <div class="screen hidden" id="tab-finanzas">
       <section class="card">
         <div class="card-head">
+          <span class="card-title">Estadísticas</span>
+        </div>
+        <div id="fin-charts" class="fin-charts">
+          <div class="ai-loading">Cargando gráficas…</div>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="card-head">
           <span class="card-title">Cuentas</span>
           <button id="fin-eye" class="mini-refresh" title="Ocultar/mostrar valores">👁</button>
         </div>
         <div class="fin-total-row">
           <div class="fin-total-banner">
-            <span class="fin-total-label">Total estimado</span>
+            <span class="fin-total-label">Ahorros totales</span>
             <div class="fin-total-lines">
               <div class="fin-total-line">
                 <span class="fin-total-cur">$U</span>
@@ -253,6 +264,7 @@
                 <span class="fin-total-amt" id="fin-total-usd">—</span>
                 <span class="fin-total-delta" id="fin-total-usd-delta"></span>
               </div>
+              <div class="fin-total-conv" id="fin-total-conv"></div>
             </div>
           </div>
           <button id="fin-clear-all" class="fin-btn danger" title="Borrar todas las entradas">Limpiar todo</button>
@@ -268,6 +280,7 @@
           <span class="fin-exp-sort">
             <button class="fin-sort-btn active" data-sort="name">Nombre</button>
             <button class="fin-sort-btn" data-sort="day">Día</button>
+            <button class="fin-sort-btn" data-sort="kind">Tipo</button>
           </span>
         </div>
         <div class="fin-exp-total-banner">
@@ -281,6 +294,7 @@
               <span class="fin-total-cur">U$S</span>
               <span class="fin-total-amt" id="fin-exp-total-usd">—</span>
             </div>
+            <div class="fin-total-conv" id="fin-exp-total-conv"></div>
           </div>
         </div>
         <div class="fin-exp-add">
@@ -294,6 +308,7 @@
             <select id="fin-exp-kind" class="fin-select" title="Tipo">
               <option value="servicio">Servicio</option>
               <option value="gasto">Gasto</option>
+              <option value="suscripcion">Suscripción</option>
             </select>
             <input id="fin-exp-day" class="fin-input fin-input-day" type="text" inputmode="numeric" placeholder="Día" title="Día de cobro (opcional)" autocomplete="off">
             <button id="fin-exp-add-btn" class="fin-btn">+ Agregar</button>

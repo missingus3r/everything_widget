@@ -368,7 +368,7 @@ function renderMarkets(m) {
     <div class="mkt-cols">
       <div class="mkt-col">
         <div class="mkt-sub-title">Cripto <span class="mkt-src">· USD</span></div>
-        ${cryptoHtml}
+        <div class="mkt-list">${cryptoHtml}</div>
       </div>
       <div class="mkt-col">
         <div class="mkt-sub-title">Divisas <span class="mkt-src">· 1 = UYU</span></div>
@@ -377,7 +377,7 @@ function renderMarkets(m) {
           <span class="mkt-fx-cell">DolarAPI</span>
           <span class="mkt-fx-cell">ExchangeRate</span>
         </div>
-        ${fxRows}
+        <div class="mkt-list">${fxRows}</div>
       </div>
     </div>`;
   adjustWindowSize();
@@ -390,6 +390,18 @@ async function refreshMarkets() {
     const m = await window.api.fetchMarkets();
     marketsData = m;
     renderMarkets(m);
+
+    // Feed the USD buy/sell rate into Finanzas for UYU↔USD conversions.
+    const usd = m && m.fx && m.fx.dolarapi && m.fx.dolarapi.USD;
+    if (usd && usd.compra && usd.venta) {
+      finUsdRate = { compra: usd.compra, venta: usd.venta };
+      paintConvertedTotals();
+      // Refresh charts (the "por tipo" chart converts USD items) without a full
+      // re-render, so any balance the user is typing isn't wiped.
+      if (finChartsEl && finLastExpenses.length) {
+        renderFinanzasCharts(finLastAccounts, finLastExpenses);
+      }
+    }
   } catch (e) {
     renderMarkets({ error: String(e) });
   } finally {
@@ -1054,9 +1066,15 @@ keyValue.addEventListener('keydown', (e) => {
 // ── Finanzas ───────────────────────────────────────────────────
 const finAccountsEl = $('fin-accounts');
 const finExpensesEl = $('fin-expenses');
+const finChartsEl = $('fin-charts');
 let finHidden = false;        // "hide values" toggle (persisted in the db)
 let finHiddenLoaded = false;  // becomes true once we've read the saved state
-let finExpSort = 'name';      // gastos y servicios sort: 'name' | 'day'
+let finExpSort = 'name';      // gastos y servicios sort: 'name' | 'day' | 'kind'
+let finUsdRate = null;        // { compra, venta } from DolarAPI, for UYU↔USD conversion
+let finTotals = { uyu: 0, usd: 0 };   // last computed savings totals (per currency)
+let finSvc = { uyu: 0, usd: 0 };      // last computed gastos+servicios totals (per currency)
+let finLastAccounts = [];     // cached for chart re-render when the rate arrives
+let finLastExpenses = [];
 let finExpSorted = [];        // latest sorted expenses (shared with the "ver todo" modal)
 let finExpModalEl = null;     // the open "ver toda la lista" modal overlay, if any
 const FIN_EXP_INLINE_LIMIT = 10; // how many expenses to show inline before "ver todo"
@@ -1177,14 +1195,18 @@ function setCardStatus(card, msg, kind) {
   el.className = 'fin-card-status' + (kind ? ` ${kind}` : '');
 }
 
+const EXP_KINDS = ['servicio', 'gasto', 'suscripcion'];
+const EXP_KIND_LABELS = { servicio: 'Servicio', gasto: 'Gasto', suscripcion: 'Suscripción' };
+function expKind(e) { return EXP_KINDS.includes(e.kind) ? e.kind : 'servicio'; }
+
 function expenseItemHtml(e) {
-  const kind = e.kind === 'gasto' ? 'gasto' : 'servicio';
+  const kind = expKind(e);
   const amt = finHidden ? FIN_MASK : fmtMoney(e.amount, e.currency);
   const dayBadge = e.billing_day
     ? `<span class="fin-exp-day-badge" title="Día de cobro">día ${e.billing_day}</span>` : '';
   return `
     <div class="fin-exp-item" data-id="${e.id}">
-      <span class="fin-exp-kind fin-exp-kind-${kind}">${kind === 'gasto' ? 'Gasto' : 'Servicio'}</span>
+      <span class="fin-exp-kind fin-exp-kind-${kind}">${EXP_KIND_LABELS[kind]}</span>
       <span class="fin-exp-name">${escapeHtml(e.name)}</span>
       ${dayBadge}
       <span class="fin-exp-amt">${amt}</span>
@@ -1243,6 +1265,7 @@ function openExpenseEditModal(e) {
         <select class="fin-select js-edit-kind" title="Tipo">
           <option value="servicio">Servicio</option>
           <option value="gasto">Gasto</option>
+          <option value="suscripcion">Suscripción</option>
         </select>
         <input class="fin-input fin-input-day js-edit-day" type="text" inputmode="numeric" placeholder="Día" title="Día de cobro (opcional)" autocomplete="off">
       </div>
@@ -1264,7 +1287,7 @@ function openExpenseEditModal(e) {
   nameI.value = e.name || '';
   amtI.value = e.amount != null ? fmtPlain(e.amount) : '';
   curI.value = String(e.currency || 'UYU').toUpperCase() === 'USD' ? 'USD' : 'UYU';
-  kindI.value = e.kind === 'gasto' ? 'gasto' : 'servicio';
+  kindI.value = expKind(e);
   dayI.value = e.billing_day != null ? e.billing_day : '';
 
   const close = () => overlay.remove();
@@ -1337,6 +1360,135 @@ function openExpenseModal() {
   renderExpenseModalList();
 }
 
+// ── Finanzas charts (drawn with inline SVG / divs, no libraries) ──
+function finDateShort(ts) {
+  if (!ts) return '';
+  const d = new Date(ts);
+  return d.toLocaleDateString('es-UY', { day: '2-digit', month: '2-digit' });
+}
+
+// Area + line chart from a numeric series, scaled into a 100×40 viewBox.
+function finAreaChart(values) {
+  const n = values.length;
+  if (n < 2) return '';
+  const W = 100, H = 40, padY = 3;
+  const min = Math.min(...values), max = Math.max(...values);
+  const range = max - min || 1;
+  const x = (i) => (i / (n - 1)) * W;
+  const y = (v) => H - padY - ((v - min) / range) * (H - padY * 2);
+  const pts = values.map((v, i) => `${x(i).toFixed(2)},${y(v).toFixed(2)}`);
+  const line = `M ${pts.join(' L ')}`;
+  const area = `M ${x(0).toFixed(2)},${H} L ${pts.join(' L ')} L ${x(n - 1).toFixed(2)},${H} Z`;
+  return `
+    <svg class="fin-chart-svg" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">
+      <path class="fin-area-fill" d="${area}"/>
+      <path class="fin-area-line" d="${line}"/>
+    </svg>`;
+}
+
+// Horizontal bars. items: [{ label, value, text, cls }].
+function finBars(items) {
+  if (!items.length) return '';
+  const max = Math.max(1, ...items.map((i) => i.value));
+  return `<div class="fin-bars">` + items.map((i) => {
+    const pct = i.value > 0 ? Math.max(3, (i.value / max) * 100) : 0;
+    const val = finHidden ? FIN_MASK : i.text;
+    return `
+      <div class="fin-bar-row">
+        <span class="fin-bar-label" title="${escapeHtml(i.label)}">${escapeHtml(i.label)}</span>
+        <span class="fin-bar-track"><span class="fin-bar-fill ${i.cls || ''}" style="width:${pct.toFixed(1)}%"></span></span>
+        <span class="fin-bar-val">${val}</span>
+      </div>`;
+  }).join('') + `</div>`;
+}
+
+// Consolidated totals: everything valued in pesos and in dollars using the
+// DolarAPI buy/sell rate (USD→UYU at compra, UYU→USD at venta — liquidation value).
+function paintConvertedTotals() {
+  const set = (id, uyu, usd) => {
+    const el = $(id);
+    if (!el) return;
+    if (!finUsdRate || !finUsdRate.compra || !finUsdRate.venta) { el.textContent = ''; el.title = ''; return; }
+    if (finHidden) { el.textContent = `Total ${FIN_MASK}`; el.title = ''; return; }
+    const pesos = uyu + usd * finUsdRate.compra;
+    const dolares = usd + uyu / finUsdRate.venta;
+    el.textContent = `Total ≈ $U ${fmtPlain(pesos)} · U$S ${fmtPlain(dolares)}`;
+    el.title = `USD valuado a compra $${fmtPlain(finUsdRate.compra)} · ` +
+               `UYU valuado a venta $${fmtPlain(finUsdRate.venta)}`;
+  };
+  set('fin-total-conv',     finTotals.uyu, finTotals.usd);
+  set('fin-sum-conv',       finTotals.uyu, finTotals.usd);
+  set('fin-exp-total-conv', finSvc.uyu,    finSvc.usd);
+  set('fin-sum-svc-conv',   finSvc.uyu,    finSvc.usd);
+}
+
+async function renderFinanzasCharts(accounts, expenses) {
+  if (!finChartsEl) return;
+  let history = [];
+  try { history = await window.api.finances.getHistory(); } catch {}
+
+  const blocks = [];
+
+  // 1) Ahorros en el tiempo (total UYU).
+  const uyuVals = (history || []).map((p) => p.uyu || 0);
+  if (uyuVals.length >= 2) {
+    const last = uyuVals[uyuVals.length - 1];
+    blocks.push(`
+      <div class="fin-chart">
+        <div class="fin-chart-head">
+          <span class="fin-chart-title">Ahorros en el tiempo</span>
+          <span class="fin-chart-meta">$U ${finHidden ? FIN_MASK : fmtPlain(last)}</span>
+        </div>
+        ${finAreaChart(uyuVals)}
+        <div class="fin-chart-foot">
+          <span>${finDateShort(history[0].ts)}</span>
+          <span>${finDateShort(history[history.length - 1].ts)}</span>
+        </div>
+      </div>`);
+  } else {
+    blocks.push(`
+      <div class="fin-chart">
+        <div class="fin-chart-head"><span class="fin-chart-title">Ahorros en el tiempo</span></div>
+        <div class="fin-chart-empty">Cargá saldos en al menos 2 fechas para ver la evolución.</div>
+      </div>`);
+  }
+
+  // 2) Ahorros por cuenta (UYU).
+  const accBars = accounts
+    .filter((a) => a.uyu && a.uyu.value > 0)
+    .map((a) => ({ label: a.name, value: a.uyu.value, text: fmtMoney(a.uyu.value, 'UYU'), cls: 'green' }))
+    .sort((x, y) => y.value - x.value);
+  blocks.push(`
+    <div class="fin-chart">
+      <div class="fin-chart-head"><span class="fin-chart-title">Ahorros por cuenta <span class="fin-chart-meta">$U</span></span></div>
+      ${accBars.length ? finBars(accBars) : '<div class="fin-chart-empty">Sin saldos en pesos.</div>'}
+    </div>`);
+
+  // 3) Gastos y servicios por tipo (en pesos). USD items are converted with the
+  //    dollar buy rate so every kind is comparable in one currency; without a
+  //    rate yet, USD items fall back to their nominal amount.
+  const toUyu = (e) => {
+    const amt = e.amount || 0;
+    if (String(e.currency).toUpperCase() !== 'USD') return amt;
+    return finUsdRate && finUsdRate.compra ? amt * finUsdRate.compra : amt;
+  };
+  const byKind = { servicio: 0, gasto: 0, suscripcion: 0 };
+  for (const e of expenses) byKind[expKind(e)] += toUyu(e);
+  const typeBars = [
+    { label: 'Servicios',     value: byKind.servicio,    text: fmtMoney(byKind.servicio, 'UYU'),    cls: 'blue' },
+    { label: 'Gastos',        value: byKind.gasto,       text: fmtMoney(byKind.gasto, 'UYU'),       cls: 'amber' },
+    { label: 'Suscripciones', value: byKind.suscripcion, text: fmtMoney(byKind.suscripcion, 'UYU'), cls: 'violet' },
+  ].filter((b) => b.value > 0);
+  blocks.push(`
+    <div class="fin-chart">
+      <div class="fin-chart-head"><span class="fin-chart-title">Gastos y servicios por tipo <span class="fin-chart-meta">$U / mes</span></span></div>
+      ${typeBars.length ? finBars(typeBars) : '<div class="fin-chart-empty">Sin gastos en pesos.</div>'}
+    </div>`);
+
+  finChartsEl.innerHTML = blocks.join('');
+  adjustWindowSize();
+}
+
 async function renderFinanzas() {
   if (!finAccountsEl) return;
   let state;
@@ -1393,6 +1545,14 @@ async function renderFinanzas() {
     if (String(e.currency).toUpperCase() === 'USD') svcUsd += e.amount || 0;
     else svcUyu += e.amount || 0;
   }
+
+  // Cache for the converted totals + chart re-render when the dollar rate loads.
+  finTotals = { uyu: totUyu, usd: totUsd };
+  finSvc = { uyu: svcUyu, usd: svcUsd };
+  finLastAccounts = accounts;
+  finLastExpenses = expenses;
+  paintConvertedTotals();
+
   // Dashboard "Gastos totales" banner.
   const sumSvcUyuEl = $('fin-sum-svc-uyu');
   const sumSvcUsdEl = $('fin-sum-svc-usd');
@@ -1414,6 +1574,7 @@ async function renderFinanzas() {
 
   if (finExpensesEl) {
     const byName = (a, b) => String(a.name).localeCompare(String(b.name), 'es', { sensitivity: 'base' });
+    const KIND_RANK = { gasto: 0, servicio: 1, suscripcion: 2 };
     finExpSorted = expenses.slice().sort((a, b) => {
       if (finExpSort === 'day') {
         // Sort by billing day (ascending); items without a day go last,
@@ -1421,6 +1582,12 @@ async function renderFinanzas() {
         const da = a.billing_day == null ? Infinity : a.billing_day;
         const dbb = b.billing_day == null ? Infinity : b.billing_day;
         return da !== dbb ? da - dbb : byName(a, b);
+      }
+      if (finExpSort === 'kind') {
+        // Group by type (gasto, servicio, suscripción), then by name.
+        const ra = KIND_RANK[expKind(a)] ?? 9;
+        const rb = KIND_RANK[expKind(b)] ?? 9;
+        return ra !== rb ? ra - rb : byName(a, b);
       }
       return byName(a, b);
     });
@@ -1498,6 +1665,8 @@ async function renderFinanzas() {
       });
     }
   });
+
+  renderFinanzasCharts(accounts, expenses);
 }
 
 // "Limpiar todo" lives in the static total banner, so wire it up once.
