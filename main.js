@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Tray, Menu, ipcMain, nativeImage, screen } = require('electron');
+const { app, BrowserWindow, Tray, Menu, ipcMain, nativeImage, screen, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const zlib = require('zlib');
@@ -7,6 +7,7 @@ const { spawn } = require('child_process');
 const { loadConfig, saveConfig } = require('./config');
 const systemStats = require('./systemStats');
 const { fetchWeather } = require('./weather');
+const { fetchMarkets } = require('./markets');
 const { runSpeedtest } = require('./speedtest');
 const speedtestHistory = require('./speedtestHistory');
 const { readLocalUsage } = require('./localUsage');
@@ -214,9 +215,9 @@ function createTray() {
 function createWindow() {
   const { width: screenW } = screen.getPrimaryDisplay().workAreaSize;
   win = new BrowserWindow({
-    width: 380,
+    width: 820,
     height: 720,
-    x: screenW - 400,
+    x: screenW - 840,
     y: 20,
     useContentSize: true,
     show: !startHidden,
@@ -252,6 +253,13 @@ ipcMain.handle('fetch-weather', async () => {
   }
 });
 ipcMain.handle('fetch-ai-usage', () => fetchAIUsage());
+ipcMain.handle('fetch-markets', async () => {
+  try {
+    return await fetchMarkets();
+  } catch (e) {
+    return { error: String(e && e.message || e) };
+  }
+});
 ipcMain.handle('run-speedtest', async (event) => {
   try {
     const result = await runSpeedtest({
@@ -294,19 +302,24 @@ ipcMain.handle('save-api-keys', (_event, keys) => {
 });
 
 // ── Finanzas ───────────────────────────────────────────────────
-ipcMain.handle('finances:status', () => finances.status());
-ipcMain.handle('finances:unlock', (_e, masterPass) => finances.unlock(masterPass));
-ipcMain.handle('finances:lock', () => { finances.lock(); return { ok: true }; });
 ipcMain.handle('finances:get-state', () => finances.getState());
-ipcMain.handle('finances:save-creds', (_e, { accountId, user, pass }) =>
-  finances.saveCreds(accountId, user, pass));
 ipcMain.handle('finances:save-manual', (_e, { accountId, uyu, usd }) =>
   finances.saveManual(accountId, uyu, usd));
-ipcMain.handle('finances:refresh-bank', (_e, accountId) =>
-  finances.refreshBank(accountId, win));
+ipcMain.handle('finances:clear-account', (_e, accountId) => finances.clearAccount(accountId));
+ipcMain.handle('finances:clear-all', () => finances.clearAll());
+ipcMain.handle('finances:set-hidden', (_e, hidden) => finances.setHidden(hidden));
+ipcMain.handle('finances:list-expenses', () => finances.listExpenses());
+ipcMain.handle('finances:add-expense', (_e, payload) => finances.addExpense(payload));
+ipcMain.handle('finances:update-expense', (_e, payload) => finances.updateExpense(payload));
+ipcMain.handle('finances:delete-expense', (_e, id) => finances.deleteExpense(id));
 
-// Lock the Finanzas section when the app quits (key only lives in memory anyway).
-app.on('before-quit', () => { try { finances.lock(); } catch {} });
+// Open a URL in the user's default browser (used by the Finanzas account links).
+ipcMain.handle('open-external', (_e, url) => {
+  try {
+    if (typeof url === 'string' && /^https?:\/\//i.test(url)) shell.openExternal(url);
+  } catch {}
+  return { ok: true };
+});
 
 // ── Auto-launch ────────────────────────────────────────────────
 function loginItemOptions(extra = {}) {
@@ -335,7 +348,8 @@ ipcMain.on('window-minimize', () => { if (win) win.hide(); });
 ipcMain.on('window-close',    () => { if (win) win.hide(); });
 ipcMain.on('resize-content', (_e, height) => {
   if (!win) return;
-  const h = Math.max(320, Math.min(2400, Math.round(Number(height) || 0)));
+  // Grow the window to fit the full content height (no internal scroll).
+  const h = Math.max(320, Math.min(4000, Math.round(Number(height) || 0)));
   const [w] = win.getContentSize();
   win.setContentSize(w, h);
 });

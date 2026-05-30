@@ -4,6 +4,7 @@ contextBridge.exposeInMainWorld('api', {
   getConfig: () => ipcRenderer.invoke('get-config'),
   fetchSystem: () => ipcRenderer.invoke('fetch-system'),
   fetchWeather: () => ipcRenderer.invoke('fetch-weather'),
+  fetchMarkets: () => ipcRenderer.invoke('fetch-markets'),
   fetchAIUsage: () => ipcRenderer.invoke('fetch-ai-usage'),
   runSpeedtest: () => ipcRenderer.invoke('run-speedtest'),
   getSpeedtestHistory: () => ipcRenderer.invoke('get-speedtest-history'),
@@ -22,14 +23,18 @@ contextBridge.exposeInMainWorld('api', {
   onRefresh:       (cb)   => ipcRenderer.on('trigger-refresh', cb),
 
   finances: {
-    status:      ()        => ipcRenderer.invoke('finances:status'),
-    unlock:      (pass)    => ipcRenderer.invoke('finances:unlock', pass),
-    lock:        ()        => ipcRenderer.invoke('finances:lock'),
-    getState:    ()        => ipcRenderer.invoke('finances:get-state'),
-    saveCreds:   (payload) => ipcRenderer.invoke('finances:save-creds', payload),
-    saveManual:  (payload) => ipcRenderer.invoke('finances:save-manual', payload),
-    refreshBank: (id)      => ipcRenderer.invoke('finances:refresh-bank', id),
+    getState:     ()        => ipcRenderer.invoke('finances:get-state'),
+    saveManual:   (payload) => ipcRenderer.invoke('finances:save-manual', payload),
+    clearAccount: (id)      => ipcRenderer.invoke('finances:clear-account', id),
+    clearAll:     ()        => ipcRenderer.invoke('finances:clear-all'),
+    setHidden:    (hidden)  => ipcRenderer.invoke('finances:set-hidden', hidden),
+    listExpenses: ()        => ipcRenderer.invoke('finances:list-expenses'),
+    addExpense:   (payload) => ipcRenderer.invoke('finances:add-expense', payload),
+    updateExpense:(payload) => ipcRenderer.invoke('finances:update-expense', payload),
+    deleteExpense:(id)      => ipcRenderer.invoke('finances:delete-expense', id),
   },
+
+  openExternal: (url) => ipcRenderer.invoke('open-external', url),
 
   minimize: () => ipcRenderer.send('window-minimize'),
   close: () => ipcRenderer.send('window-close'),

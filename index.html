@@ -35,6 +35,8 @@
         <div class="date" id="date">—</div>
       </section>
 
+      <div class="dash-row">
+
       <!-- Weather -->
       <section class="card weather-card">
         <div class="card-head">
@@ -56,16 +58,33 @@
           <span class="card-sub" id="sys-sub">—</span>
         </div>
 
-        <div class="stat-row">
-          <div class="stat-label">CPU</div>
-          <div class="stat-bar"><div id="cpu-fill" class="bar-fill"></div></div>
-          <div class="stat-val" id="cpu-val">—</div>
-        </div>
-
-        <div class="stat-row">
-          <div class="stat-label">RAM</div>
-          <div class="stat-bar"><div id="ram-fill" class="bar-fill"></div></div>
-          <div class="stat-val" id="ram-val">—</div>
+        <div class="gauge-row">
+          <div class="gauge">
+            <div class="gauge-ring">
+              <svg viewBox="0 0 100 100" class="gauge-svg">
+                <circle class="gauge-track" cx="50" cy="50" r="42"></circle>
+                <circle class="gauge-arc" id="cpu-arc" cx="50" cy="50" r="42"></circle>
+              </svg>
+              <div class="gauge-center">
+                <div class="gauge-pct" id="cpu-val">—</div>
+                <div class="gauge-label">CPU</div>
+              </div>
+            </div>
+            <div class="gauge-sub" id="cpu-sub"></div>
+          </div>
+          <div class="gauge">
+            <div class="gauge-ring">
+              <svg viewBox="0 0 100 100" class="gauge-svg">
+                <circle class="gauge-track" cx="50" cy="50" r="42"></circle>
+                <circle class="gauge-arc" id="ram-arc" cx="50" cy="50" r="42"></circle>
+              </svg>
+              <div class="gauge-center">
+                <div class="gauge-pct" id="ram-val">—</div>
+                <div class="gauge-label">RAM</div>
+              </div>
+            </div>
+            <div class="gauge-sub" id="ram-sub"></div>
+          </div>
         </div>
 
         <div id="disks"></div>
@@ -106,6 +125,18 @@
           </div>
         </div>
 
+        <div class="net-month">
+          <span class="net-month-label" id="net-month-label">Este mes</span>
+          <span class="net-month-cell">
+            <span class="net-arrow down">↓</span>
+            <span class="net-month-val" id="net-month-down">—</span>
+          </span>
+          <span class="net-month-cell">
+            <span class="net-arrow up">↑</span>
+            <span class="net-month-val" id="net-month-up">—</span>
+          </span>
+        </div>
+
         <button id="speedtest-btn" class="action-btn">⚡ Speedtest</button>
         <div id="speedtest-status" class="speedtest-status"></div>
 
@@ -134,6 +165,8 @@
         </div>
       </section>
 
+      </div><!-- /dash-row -->
+
       <!-- AI Usage -->
       <section class="card ai-card">
         <div class="card-head">
@@ -143,8 +176,54 @@
             <button id="ai-refresh" class="mini-refresh" title="Actualizar">↻</button>
           </span>
         </div>
-        <div id="ai-content" class="ai-content">
-          <div class="ai-loading">Cargando uso de IA…</div>
+        <div id="ai-content" class="ai-content"></div>
+      </section>
+
+      <!-- Mercado: cripto + divisas → UYU -->
+      <section class="card mkt-card">
+        <div class="card-head">
+          <span class="card-title">Mercado</span>
+          <span class="card-head-right">
+            <span class="card-sub" id="mkt-when">—</span>
+            <button id="mkt-refresh" class="mini-refresh" title="Actualizar">↻</button>
+          </span>
+        </div>
+        <div id="mkt-content" class="mkt-content">
+          <div class="ai-loading">Cargando mercado…</div>
+        </div>
+      </section>
+
+      <!-- Finanzas (resumen) -->
+      <section class="card fin-summary-card" id="fin-summary-card" title="Abrir Finanzas">
+        <div class="card-head">
+          <span class="card-title">Finanzas</span>
+          <span class="card-sub">ver detalle →</span>
+        </div>
+        <div class="fin-total-banner">
+          <span class="fin-total-label">Total estimado</span>
+          <div class="fin-total-lines">
+            <div class="fin-total-line">
+              <span class="fin-total-cur">$U</span>
+              <span class="fin-total-amt" id="fin-sum-uyu">—</span>
+            </div>
+            <div class="fin-total-line">
+              <span class="fin-total-cur">U$S</span>
+              <span class="fin-total-amt" id="fin-sum-usd">—</span>
+            </div>
+          </div>
+        </div>
+        <div class="fin-exp-total-banner">
+          <span class="fin-exp-total-label">Gastos totales <span class="fin-summary-svc-count" id="fin-sum-svc-count"></span></span>
+          <div class="fin-total-lines">
+            <div class="fin-total-line">
+              <span class="fin-total-cur">$U</span>
+              <span class="fin-total-amt" id="fin-sum-svc-uyu">—</span>
+            </div>
+            <div class="fin-total-line">
+              <span class="fin-total-cur">U$S</span>
+              <span class="fin-total-amt" id="fin-sum-svc-usd">—</span>
+            </div>
+          </div>
         </div>
       </section>
 
@@ -155,32 +234,76 @@
     </div>
 
     <div class="screen hidden" id="tab-finanzas">
-      <!-- Lock screen: master password gate -->
-      <div class="fin-lock" id="fin-lock">
-        <div class="fin-lock-icon">🔒</div>
-        <div class="fin-lock-title" id="fin-lock-title">Finanzas</div>
-        <div class="fin-lock-desc" id="fin-lock-desc">
-          Ingresá tu master password para desbloquear esta sección.
+      <section class="card">
+        <div class="card-head">
+          <span class="card-title">Cuentas</span>
+          <button id="fin-eye" class="mini-refresh" title="Ocultar/mostrar valores">👁</button>
         </div>
-        <input id="fin-master" class="key-input" type="password"
-               placeholder="Master password" autocomplete="off">
-        <button id="fin-unlock-btn" class="key-add-btn">Desbloquear</button>
-        <div class="key-status" id="fin-lock-status"></div>
-        <div class="key-hint">
-          La master password no se guarda en ningún lado. Encripta tus credenciales
-          bancarias y se pide cada vez que abrís el widget.
+        <div class="fin-total-row">
+          <div class="fin-total-banner">
+            <span class="fin-total-label">Total estimado</span>
+            <div class="fin-total-lines">
+              <div class="fin-total-line">
+                <span class="fin-total-cur">$U</span>
+                <span class="fin-total-amt" id="fin-total-uyu">—</span>
+                <span class="fin-total-delta" id="fin-total-uyu-delta"></span>
+              </div>
+              <div class="fin-total-line">
+                <span class="fin-total-cur">U$S</span>
+                <span class="fin-total-amt" id="fin-total-usd">—</span>
+                <span class="fin-total-delta" id="fin-total-usd-delta"></span>
+              </div>
+            </div>
+          </div>
+          <button id="fin-clear-all" class="fin-btn danger" title="Borrar todas las entradas">Limpiar todo</button>
         </div>
-      </div>
+        <div id="fin-accounts" class="fin-accounts">
+          <div class="ai-loading">Cargando finanzas…</div>
+        </div>
+      </section>
 
-      <!-- Unlocked content -->
-      <div class="fin-content hidden" id="fin-content">
-        <div class="fin-head">
-          <span class="fin-total-label">Total estimado</span>
-          <span class="fin-total" id="fin-total">—</span>
-          <button id="fin-lock-now" class="mini-refresh" title="Bloquear sección">🔒</button>
+      <section class="card">
+        <div class="card-head">
+          <span class="card-title">Gastos y Servicios</span>
+          <span class="fin-exp-sort">
+            <button class="fin-sort-btn active" data-sort="name">Nombre</button>
+            <button class="fin-sort-btn" data-sort="day">Día</button>
+          </span>
         </div>
-        <div id="fin-accounts" class="fin-accounts"></div>
-      </div>
+        <div class="fin-exp-total-banner">
+          <span class="fin-exp-total-label">Gastos totales</span>
+          <div class="fin-total-lines">
+            <div class="fin-total-line">
+              <span class="fin-total-cur">$U</span>
+              <span class="fin-total-amt" id="fin-exp-total-uyu">—</span>
+            </div>
+            <div class="fin-total-line">
+              <span class="fin-total-cur">U$S</span>
+              <span class="fin-total-amt" id="fin-exp-total-usd">—</span>
+            </div>
+          </div>
+        </div>
+        <div class="fin-exp-add">
+          <input id="fin-exp-name" class="fin-input" placeholder="Nombre (ej. Netflix, UTE, Alquiler)" autocomplete="off">
+          <div class="fin-exp-add-row">
+            <input id="fin-exp-amount" class="fin-input" type="text" inputmode="decimal" placeholder="Monto" autocomplete="off">
+            <select id="fin-exp-cur" class="fin-select" title="Moneda">
+              <option value="UYU">$U</option>
+              <option value="USD">U$S</option>
+            </select>
+            <select id="fin-exp-kind" class="fin-select" title="Tipo">
+              <option value="servicio">Servicio</option>
+              <option value="gasto">Gasto</option>
+            </select>
+            <input id="fin-exp-day" class="fin-input fin-input-day" type="text" inputmode="numeric" placeholder="Día" title="Día de cobro (opcional)" autocomplete="off">
+            <button id="fin-exp-add-btn" class="fin-btn">+ Agregar</button>
+          </div>
+          <div class="fin-exp-status" id="fin-exp-status"></div>
+        </div>
+        <div id="fin-expenses" class="fin-expenses">
+          <div class="ai-loading">Cargando…</div>
+        </div>
+      </section>
     </div>
 
     <div class="screen hidden" id="tab-keys">

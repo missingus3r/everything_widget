@@ -2,6 +2,7 @@
 let cfg = null;
 let aiData = null;
 let weatherData = null;
+let marketsData = null;
 let lastSystem = null;
 let aiFetching = false;
 let speedtestRunning = false;
@@ -9,6 +10,7 @@ let lastAIRefreshAt = 0;
 
 const SYS_INTERVAL_MS = 2000;
 const WEATHER_INTERVAL_MS = 15 * 60 * 1000;
+const MARKETS_INTERVAL_MS = 5 * 60 * 1000;
 let AI_INTERVAL_MS = 15 * 60 * 1000;
 
 // ── Pricing & plan label ───────────────────────────────────────
@@ -44,18 +46,18 @@ const tabPanels = {
   keys: document.getElementById('tab-keys'),
   settings: document.getElementById('tab-settings'),
 };
-tabButtons.forEach((btn) => {
-  btn.addEventListener('click', () => {
-    const target = btn.dataset.tab;
-    tabButtons.forEach((b) => b.classList.toggle('active', b === btn));
-    Object.entries(tabPanels).forEach(([name, el]) => {
-      el.classList.toggle('hidden', name !== target);
-    });
-    if (target === 'finanzas') enterFinanzas();
-    if (target === 'keys') loadKeys();
-    if (target === 'settings') loadSettings();
-    adjustWindowSize();
+function switchTab(target) {
+  tabButtons.forEach((b) => b.classList.toggle('active', b.dataset.tab === target));
+  Object.entries(tabPanels).forEach(([name, el]) => {
+    if (el) el.classList.toggle('hidden', name !== target);
   });
+  if (target === 'keys') loadKeys();
+  if (target === 'settings') loadSettings();
+  if (target === 'finanzas') renderFinanzas();
+  adjustWindowSize();
+}
+tabButtons.forEach((btn) => {
+  btn.addEventListener('click', () => switchTab(btn.dataset.tab));
 });
 
 // ── Auto-resize window to content ──────────────────────────────
@@ -98,6 +100,16 @@ function fmtUptime(sec) {
   return `${m}m`;
 }
 
+// 'YYYY-MM' → "Mayo 2026" (current calendar month for the network usage label).
+function fmtMonthLabel(key) {
+  const m = /^(\d{4})-(\d{2})$/.exec(key || '');
+  if (!m) return 'Este mes';
+  const months = ['Enero','Febrero','Marzo','Abril','Mayo','Junio',
+    'Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
+  const name = months[parseInt(m[2], 10) - 1] || '';
+  return name ? `${name} ${m[1]}` : 'Este mes';
+}
+
 function barClassPct(pct) {
   if (pct >= 85) return 'red';
   if (pct >= 65) return 'yellow';
@@ -114,6 +126,19 @@ function setBar(fillEl, valEl, pct, valText) {
   fillEl.style.width = `${Math.max(0, Math.min(100, pct))}%`;
   fillEl.className = 'bar-fill ' + barClassPct(pct);
   if (valEl) valEl.textContent = valText;
+}
+
+// Circular gauge (donut). Same color logic as the bars (green/yellow/red).
+const GAUGE_CIRCUMFERENCE = 2 * Math.PI * 42; // r=42 in the 100x100 viewBox
+function setGauge(arcEl, centerEl, subEl, pct, centerText, subText) {
+  const p = Math.max(0, Math.min(100, Number(pct) || 0));
+  if (arcEl) {
+    arcEl.style.strokeDasharray = `${GAUGE_CIRCUMFERENCE}`;
+    arcEl.style.strokeDashoffset = `${GAUGE_CIRCUMFERENCE * (1 - p / 100)}`;
+    arcEl.style.stroke = pctColor(p);
+  }
+  if (centerEl) centerEl.textContent = centerText;
+  if (subEl) subEl.textContent = subText || '';
 }
 
 // ── Clock + date (tick every second) ───────────────────────────
@@ -138,11 +163,12 @@ async function refreshSystem() {
   lastSystem = s;
 
   // CPU
-  setBar($('cpu-fill'), $('cpu-val'), s.cpu, `${s.cpu}%`);
+  setGauge($('cpu-arc'), $('cpu-val'), $('cpu-sub'), s.cpu, `${s.cpu}%`, '');
 
   // RAM
   const ramPct = s.mem.pct;
-  setBar($('ram-fill'), $('ram-val'), ramPct, `${fmtBytes(s.mem.used)} / ${fmtBytes(s.mem.total)}`);
+  setGauge($('ram-arc'), $('ram-val'), $('ram-sub'), ramPct, `${ramPct}%`,
+    `${fmtBytes(s.mem.used)} / ${fmtBytes(s.mem.total)}`);
 
   // Disks
   const disksEl = $('disks');
@@ -188,6 +214,18 @@ async function refreshSystem() {
   $('net-down').textContent = fmtRate(s.net.downBps);
   $('net-up').textContent   = fmtRate(s.net.upBps);
   $('net-sub').textContent  = (s.net.adapters && s.net.adapters[0]) ? s.net.adapters.map(a => a.name).slice(0, 2).join(' · ') : '';
+
+  // Monthly consumption (accumulated by the main process)
+  const mo = s.net.monthly;
+  if (mo) {
+    $('net-month-down').textContent = fmtBytes(mo.rxBytes);
+    $('net-month-up').textContent   = fmtBytes(mo.txBytes);
+    const lbl = $('net-month-label');
+    if (lbl && mo.month) {
+      lbl.textContent = fmtMonthLabel(mo.month);
+      lbl.title = `Consumo acumulado del mes ${mo.month}`;
+    }
+  }
 
   adjustWindowSize();
 }
@@ -264,6 +302,103 @@ async function refreshWeather() {
 }
 
 $('weather-refresh').addEventListener('click', refreshWeather);
+
+// ── Mercado: cripto (USD) + divisas → UYU (dos fuentes) ────────
+function fmtCryptoUsd(v) {
+  if (v == null || !isFinite(v)) return '—';
+  if (v >= 1000) return '$' + v.toLocaleString('en-US', { maximumFractionDigits: 0 });
+  if (v >= 1)    return '$' + v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  return '$' + v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 4 });
+}
+
+function fmtUyuRate(v) {
+  if (v == null || !isFinite(v)) return '—';
+  const max = v >= 1 ? 2 : 4;
+  return '$' + v.toLocaleString('es-UY', { minimumFractionDigits: 2, maximumFractionDigits: max });
+}
+
+function fmtChange(v) {
+  if (v == null || !isFinite(v)) return '';
+  const up = v >= 0;
+  return `<span class="mkt-chg ${up ? 'up' : 'down'}">${up ? '▲' : '▼'} ${Math.abs(v).toFixed(2)}%</span>`;
+}
+
+function renderMarkets(m) {
+  const el = $('mkt-content');
+  if (!el) return;
+  if (!m || m.error) {
+    el.innerHTML = `<div class="ai-loading">Mercado no disponible</div>`;
+    return;
+  }
+  const whenEl = $('mkt-when');
+  if (whenEl) whenEl.textContent = m.fetchedAt ? fmtWhen(m.fetchedAt) : '';
+
+  let cryptoHtml;
+  if (Array.isArray(m.crypto) && m.crypto.length) {
+    cryptoHtml = m.crypto.map((c) => `
+      <div class="mkt-coin">
+        <span class="mkt-coin-sym">${escapeHtml(c.symbol)}</span>
+        <span class="mkt-coin-name">${escapeHtml(c.name)}</span>
+        <span class="mkt-coin-price">${fmtCryptoUsd(c.usd)}</span>
+        ${fmtChange(c.change24h)}
+      </div>`).join('');
+  } else {
+    cryptoHtml = `<div class="mkt-empty">Cripto no disponible</div>`;
+  }
+
+  const fx = m.fx || {};
+  const codes = fx.codes || [];
+  const da = fx.dolarapi, er = fx.erapi;
+  const fxRows = codes.map((code) => {
+    const name = (fx.names && fx.names[code]) || code;
+    const daCell = da && da[code]
+      ? `<span class="mkt-fx-val">${fmtUyuRate(da[code].venta)}</span>` +
+        `<span class="mkt-fx-sub">compra ${fmtUyuRate(da[code].compra)}</span>`
+      : `<span class="mkt-fx-val">—</span>`;
+    const erVal = er && er[code] != null ? er[code] : null;
+    return `
+      <div class="mkt-fx-row">
+        <span class="mkt-fx-cur"><b>${escapeHtml(code)}</b> ${escapeHtml(name)}</span>
+        <span class="mkt-fx-cell">${daCell}</span>
+        <span class="mkt-fx-cell"><span class="mkt-fx-val">${fmtUyuRate(erVal)}</span></span>
+      </div>`;
+  }).join('');
+
+  el.innerHTML = `
+    <div class="mkt-cols">
+      <div class="mkt-col">
+        <div class="mkt-sub-title">Cripto <span class="mkt-src">· USD</span></div>
+        ${cryptoHtml}
+      </div>
+      <div class="mkt-col">
+        <div class="mkt-sub-title">Divisas <span class="mkt-src">· 1 = UYU</span></div>
+        <div class="mkt-fx-row mkt-fx-head">
+          <span class="mkt-fx-cur"></span>
+          <span class="mkt-fx-cell">DolarAPI</span>
+          <span class="mkt-fx-cell">ExchangeRate</span>
+        </div>
+        ${fxRows}
+      </div>
+    </div>`;
+  adjustWindowSize();
+}
+
+async function refreshMarkets() {
+  const btn = $('mkt-refresh');
+  if (btn) btn.classList.add('spinning');
+  try {
+    const m = await window.api.fetchMarkets();
+    marketsData = m;
+    renderMarkets(m);
+  } catch (e) {
+    renderMarkets({ error: String(e) });
+  } finally {
+    if (btn) btn.classList.remove('spinning');
+  }
+}
+
+const mktRefreshBtn = $('mkt-refresh');
+if (mktRefreshBtn) mktRefreshBtn.addEventListener('click', refreshMarkets);
 
 // ── Speedtest ──────────────────────────────────────────────────
 function fmtMbps(v) {
@@ -557,7 +692,6 @@ function renderLocalTokens(local) {
   const weekCost  = localApiCost(local.week);
 
   return `
-    <div class="ai-provider">Local Tokens</div>
     <div class="local-section">
       ${row('Hoy', local.today || {})}
       ${row('7 días', local.week || {})}
@@ -571,10 +705,34 @@ function renderLocalTokens(local) {
     </div>`;
 }
 
+function aiSkeletonHTML() {
+  const skRow = () => `
+    <div class="ai-row">
+      <div class="ai-row-head"><span class="sk sk-label"></span><span class="sk sk-pct"></span></div>
+      <div class="sk sk-track"></div>
+    </div>`;
+  const skBlock = (rows) => `
+    <div class="ai-stack-item">
+      <span class="sk sk-provider"></span>
+      ${Array.from({ length: rows }, skRow).join('')}
+    </div>`;
+  return `
+    <div class="ai-col">
+      ${skBlock(3)}
+      ${skBlock(2)}
+    </div>
+    <div class="ai-col">
+      <span class="sk sk-provider"></span>
+      <div class="sk sk-track" style="height:14px;margin-top:6px;"></div>
+      <span class="sk sk-line" style="margin-top:8px;"></span>
+      <span class="sk sk-line short"></span>
+    </div>`;
+}
+
 function renderAI() {
   const el = $('ai-content');
   if (!aiData) {
-    el.innerHTML = `<div class="ai-loading">Cargando uso de IA…</div>`;
+    el.innerHTML = aiSkeletonHTML();
     return;
   }
   if (!aiData.available) {
@@ -582,10 +740,10 @@ function renderAI() {
     return;
   }
 
-  const blocks = [];
+  const providerBlocks = [];
   const c = aiData.claude;
   if (c) {
-    const parts = [`<div class="ai-provider">Claude · ${CLAUDE_PLAN}</div>`];
+    const parts = [`<div class="ai-provider">Claude${CLAUDE_PLAN ? ' · ' + CLAUDE_PLAN : ''}</div>`];
     if (c.session)    parts.push(aiRow('Sesión',         c.session.pct, '',                                                        'cd-session'));
     if (c.weekAll)    parts.push(aiRow('Semana (todos)', c.weekAll.pct, '',                                                        'cd-week'));
     if (c.weekSonnet) parts.push(aiRow('Semana (Sonnet)', c.weekSonnet.pct, ''));
@@ -606,7 +764,7 @@ function renderAI() {
           </div>`);
       }
     }
-    blocks.push(parts.join(''));
+    providerBlocks.push(`<div class="ai-stack-item">${parts.join('')}</div>`);
   }
 
   const cx = aiData.codex;
@@ -627,7 +785,7 @@ function renderAI() {
           </div>`);
       }
     }
-    blocks.push(parts.join(''));
+    providerBlocks.push(`<div class="ai-stack-item">${parts.join('')}</div>`);
   }
 
   const el11 = aiData.eleven;
@@ -642,18 +800,22 @@ function renderAI() {
     if (el11.voices && el11.voices.limit != null) {
       parts.push(`<div class="ai-row-meta">Voice slots: <b style="color:#d4d4d8">${el11.voices.used ?? 0} / ${el11.voices.limit}</b></div>`);
     }
-    blocks.push(parts.join(''));
+    providerBlocks.push(`<div class="ai-stack-item">${parts.join('')}</div>`);
   }
 
+  // Left column: Claude / Codex / ElevenLabs stacked. Right column: Local Tokens.
+  const cols = [];
+  if (providerBlocks.length) cols.push(`<div class="ai-col">${providerBlocks.join('')}</div>`);
   if (aiData.local) {
-    blocks.push(renderLocalTokens(aiData.local));
+    cols.push(`<div class="ai-col"><div class="ai-provider">Local Tokens</div>${renderLocalTokens(aiData.local)}</div>`);
   }
 
-  if (!blocks.length) {
+  if (!cols.length) {
     el.innerHTML = `<div class="ai-loading">Sin datos de uso (¿logueaste claude/codex?)</div>`;
   } else {
-    el.innerHTML = blocks.join('');
+    el.innerHTML = cols.join('');
   }
+
   tickCountdowns();
   adjustWindowSize();
 }
@@ -716,6 +878,7 @@ async function refreshAI() {
   aiFetching = true;
   const btn = $('ai-refresh');
   btn.classList.add('spinning');
+  if (!aiData) renderAI(); // paint skeleton while the first fetch is in flight
   try {
     aiData = await window.api.fetchAIUsage();
   } catch {
@@ -889,17 +1052,38 @@ keyValue.addEventListener('keydown', (e) => {
 });
 
 // ── Finanzas ───────────────────────────────────────────────────
-const finLock      = $('fin-lock');
-const finContent   = $('fin-content');
-const finMaster    = $('fin-master');
-const finUnlockBtn = $('fin-unlock-btn');
-const finLockStat  = $('fin-lock-status');
 const finAccountsEl = $('fin-accounts');
-let finUnlocked = false;
+const finExpensesEl = $('fin-expenses');
+let finHidden = false;        // "hide values" toggle (persisted in the db)
+let finHiddenLoaded = false;  // becomes true once we've read the saved state
+let finExpSort = 'name';      // gastos y servicios sort: 'name' | 'day'
+let finExpSorted = [];        // latest sorted expenses (shared with the "ver todo" modal)
+let finExpModalEl = null;     // the open "ver toda la lista" modal overlay, if any
+const FIN_EXP_INLINE_LIMIT = 10; // how many expenses to show inline before "ver todo"
 
-function setFinLockStatus(msg, kind) {
-  finLockStat.textContent = msg || '';
-  finLockStat.className = 'key-status' + (kind ? ` ${kind}` : '');
+// In-app confirmation modal. We deliberately avoid the native window.confirm():
+// on this frameless + transparent + always-on-top window, the OS dialog steals
+// keyboard focus and never returns it to the renderer, leaving the inputs unable
+// to receive typed text afterwards. An HTML overlay stays inside the renderer.
+function finConfirm(message) {
+  return new Promise((resolve) => {
+    const overlay = document.createElement('div');
+    overlay.className = 'fin-modal';
+    overlay.innerHTML = `
+      <div class="fin-modal-box">
+        <div class="fin-modal-msg"></div>
+        <div class="fin-modal-actions">
+          <button class="fin-btn js-modal-cancel">Cancelar</button>
+          <button class="fin-btn danger js-modal-ok">Borrar</button>
+        </div>
+      </div>`;
+    overlay.querySelector('.fin-modal-msg').textContent = message;
+    const done = (val) => { overlay.remove(); resolve(val); };
+    overlay.querySelector('.js-modal-cancel').addEventListener('click', () => done(false));
+    overlay.querySelector('.js-modal-ok').addEventListener('click', () => done(true));
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) done(false); });
+    document.body.appendChild(overlay);
+  });
 }
 
 function fmtMoney(n, cur) {
@@ -908,6 +1092,13 @@ function fmtMoney(n, cur) {
     minimumFractionDigits: 2, maximumFractionDigits: 2,
   });
   return `${sym} ${v}`;
+}
+
+// Plain localized number (no symbol) for prefilling editable inputs.
+function fmtPlain(n) {
+  return Number(n).toLocaleString('es-UY', {
+    minimumFractionDigits: 2, maximumFractionDigits: 2,
+  });
 }
 
 function fmtDelta(d, cur) {
@@ -933,56 +1124,16 @@ function finTimeAgo(ts) {
   return `hace ${d}d`;
 }
 
-async function enterFinanzas() {
-  try {
-    const st = await window.api.finances.status();
-    finUnlocked = !!st.unlocked;
-  } catch { finUnlocked = false; }
-
-  if (finUnlocked) {
-    finLock.classList.add('hidden');
-    finContent.classList.remove('hidden');
-    await renderFinanzas();
-  } else {
-    finContent.classList.add('hidden');
-    finLock.classList.remove('hidden');
-    finMaster.value = '';
-    setFinLockStatus('');
-    setTimeout(() => finMaster.focus(), 50);
-  }
-  adjustWindowSize();
-}
-
-async function unlockFinanzas() {
-  const pass = finMaster.value;
-  if (!pass) { setFinLockStatus('Ingresá la master password', 'error'); return; }
-  finUnlockBtn.disabled = true;
-  setFinLockStatus('Desbloqueando…');
-  try {
-    const r = await window.api.finances.unlock(pass);
-    if (r && r.ok) {
-      finUnlocked = true;
-      finMaster.value = '';
-      finLock.classList.add('hidden');
-      finContent.classList.remove('hidden');
-      await renderFinanzas();
-    } else {
-      setFinLockStatus((r && r.error) || 'No se pudo desbloquear', 'error');
-    }
-  } catch {
-    setFinLockStatus('Error al desbloquear', 'error');
-  } finally {
-    finUnlockBtn.disabled = false;
-    adjustWindowSize();
-  }
-}
+const FIN_MASK = '••••';
 
 function accountCardHtml(a) {
   const rows = a.currencies.map((cur) => {
     const key = cur.toLowerCase();
     const cell = a[key];
-    const amount = cell ? fmtMoney(cell.value, cur) : `<span class="fin-amt-empty">—</span>`;
-    const delta = cell ? fmtDelta(cell.delta, cur) : '';
+    const amount = finHidden
+      ? `<span class="fin-amt-hidden">${FIN_MASK}</span>`
+      : (cell ? fmtMoney(cell.value, cur) : `<span class="fin-amt-empty">—</span>`);
+    const delta = finHidden ? '' : (cell ? fmtDelta(cell.delta, cur) : '');
     return `
       <div class="fin-row">
         <span class="fin-cur">${cur === 'USD' ? 'U$S' : '$U'}</span>
@@ -991,41 +1142,30 @@ function accountCardHtml(a) {
       </div>`;
   }).join('');
 
-  let controls = '';
-  if (a.kind === 'manual') {
-    const inputs = a.currencies.map((cur) => `
+  const inputs = a.currencies.map((cur) => {
+    const cell = a[cur.toLowerCase()];
+    const ph = (finHidden || !cell) ? (cur === 'USD' ? 'Dólares' : 'Pesos') : fmtPlain(cell.value);
+    return `
       <input class="fin-input js-manual" data-cur="${cur}" type="text" inputmode="decimal"
-             placeholder="${cur === 'USD' ? 'Dólares' : 'Pesos'}" autocomplete="off">`).join('');
-    controls = `
-      <div class="fin-manual-row">
-        ${inputs}
-        <button class="fin-btn js-save-manual">Guardar</button>
-      </div>`;
-  } else {
-    const credsBadge = a.hasCreds
-      ? '<span class="fin-badge ok">credenciales ✓</span>'
-      : '<span class="fin-badge warn">sin credenciales</span>';
-    controls = `
-      <div class="fin-bank-row">
-        ${credsBadge}
-        <button class="fin-btn js-creds-toggle">${a.hasCreds ? 'Editar' : 'Configurar'} login</button>
-        <button class="fin-btn primary js-refresh">↻ Actualizar</button>
-      </div>
-      <div class="fin-creds hidden">
-        <input class="fin-input js-cred-user" type="text" placeholder="Usuario / documento" autocomplete="off">
-        <input class="fin-input js-cred-pass" type="password" placeholder="Contraseña" autocomplete="off">
-        <button class="fin-btn js-save-creds">Guardar credenciales</button>
-      </div>`;
-  }
+             placeholder="${ph}" autocomplete="off">`;
+  }).join('');
+
+  const nameHtml = a.url
+    ? `<a class="fin-card-name js-site" href="#" data-url="${escapeHtml(a.url)}" title="Abrir sitio">${escapeHtml(a.name)} <span class="fin-site-arrow">↗</span></a>`
+    : `<span class="fin-card-name">${escapeHtml(a.name)}</span>`;
 
   return `
-    <div class="fin-card" data-id="${a.id}" data-kind="${a.kind}">
+    <div class="fin-card" data-id="${a.id}">
       <div class="fin-card-head">
-        <span class="fin-card-name">${escapeHtml(a.name)}</span>
+        ${nameHtml}
         <span class="fin-card-time">${finTimeAgo(a.ts)}</span>
       </div>
       <div class="fin-rows">${rows}</div>
-      ${controls}
+      <div class="fin-inputs-row">${inputs}</div>
+      <div class="fin-actions-row">
+        <button class="fin-btn js-save-manual">Guardar</button>
+        <button class="fin-btn danger js-clear" title="Borrar entradas de ${escapeHtml(a.name)}">Limpiar</button>
+      </div>
       <div class="fin-card-status"></div>
     </div>`;
 }
@@ -1037,7 +1177,168 @@ function setCardStatus(card, msg, kind) {
   el.className = 'fin-card-status' + (kind ? ` ${kind}` : '');
 }
 
+function expenseItemHtml(e) {
+  const kind = e.kind === 'gasto' ? 'gasto' : 'servicio';
+  const amt = finHidden ? FIN_MASK : fmtMoney(e.amount, e.currency);
+  const dayBadge = e.billing_day
+    ? `<span class="fin-exp-day-badge" title="Día de cobro">día ${e.billing_day}</span>` : '';
+  return `
+    <div class="fin-exp-item" data-id="${e.id}">
+      <span class="fin-exp-kind fin-exp-kind-${kind}">${kind === 'gasto' ? 'Gasto' : 'Servicio'}</span>
+      <span class="fin-exp-name">${escapeHtml(e.name)}</span>
+      ${dayBadge}
+      <span class="fin-exp-amt">${amt}</span>
+      <button class="fin-exp-edit js-exp-edit" title="Editar">✎</button>
+      <button class="fin-exp-del js-exp-del" title="Borrar">✕</button>
+    </div>`;
+}
+
+// Attach edit + delete handlers to every expense row inside `container` (used for
+// both the inline list and the "ver todo" modal). On success re-renders Finanzas,
+// which also refreshes the modal list if it's open.
+function wireExpenseRowActions(container) {
+  container.querySelectorAll('.js-exp-del').forEach((b) => {
+    b.addEventListener('click', async () => {
+      const item = b.closest('.fin-exp-item');
+      const id = item && item.dataset.id;
+      if (!id) return;
+      const name = item.querySelector('.fin-exp-name')?.textContent || 'este ítem';
+      if (!(await finConfirm(`¿Borrar "${name}"?`))) return;
+      b.disabled = true;
+      try {
+        const r = await window.api.finances.deleteExpense(Number(id));
+        if (r && r.ok) await renderFinanzas();
+      } catch {} finally { b.disabled = false; }
+    });
+  });
+  container.querySelectorAll('.js-exp-edit').forEach((b) => {
+    b.addEventListener('click', () => {
+      const item = b.closest('.fin-exp-item');
+      const id = item && item.dataset.id;
+      if (!id) return;
+      const exp = finExpSorted.find((e) => String(e.id) === String(id));
+      if (exp) openExpenseEditModal(exp);
+    });
+  });
+}
+
+// Edit modal: a pre-filled form mirroring the "add" fields. Saving updates the
+// row in place; the underlying lists/banners refresh via renderFinanzas().
+function openExpenseEditModal(e) {
+  const overlay = document.createElement('div');
+  overlay.className = 'fin-modal';
+  overlay.innerHTML = `
+    <div class="fin-modal-box fin-exp-edit-box">
+      <div class="fin-exp-modal-head">
+        <span class="fin-exp-modal-title">Editar gasto / servicio</span>
+        <button class="fin-modal-x js-edit-close" title="Cerrar">✕</button>
+      </div>
+      <input class="fin-input js-edit-name" placeholder="Nombre" autocomplete="off">
+      <div class="fin-exp-add-row">
+        <input class="fin-input js-edit-amount" type="text" inputmode="decimal" placeholder="Monto" autocomplete="off">
+        <select class="fin-select js-edit-cur" title="Moneda">
+          <option value="UYU">$U</option>
+          <option value="USD">U$S</option>
+        </select>
+        <select class="fin-select js-edit-kind" title="Tipo">
+          <option value="servicio">Servicio</option>
+          <option value="gasto">Gasto</option>
+        </select>
+        <input class="fin-input fin-input-day js-edit-day" type="text" inputmode="numeric" placeholder="Día" title="Día de cobro (opcional)" autocomplete="off">
+      </div>
+      <div class="fin-exp-status js-edit-status"></div>
+      <div class="fin-modal-actions">
+        <button class="fin-btn js-edit-cancel">Cancelar</button>
+        <button class="fin-btn js-edit-save">Guardar</button>
+      </div>
+    </div>`;
+
+  const nameI = overlay.querySelector('.js-edit-name');
+  const amtI = overlay.querySelector('.js-edit-amount');
+  const curI = overlay.querySelector('.js-edit-cur');
+  const kindI = overlay.querySelector('.js-edit-kind');
+  const dayI = overlay.querySelector('.js-edit-day');
+  const statusEl = overlay.querySelector('.js-edit-status');
+  const saveBtn = overlay.querySelector('.js-edit-save');
+
+  nameI.value = e.name || '';
+  amtI.value = e.amount != null ? fmtPlain(e.amount) : '';
+  curI.value = String(e.currency || 'UYU').toUpperCase() === 'USD' ? 'USD' : 'UYU';
+  kindI.value = e.kind === 'gasto' ? 'gasto' : 'servicio';
+  dayI.value = e.billing_day != null ? e.billing_day : '';
+
+  const close = () => overlay.remove();
+  overlay.querySelector('.js-edit-close').addEventListener('click', close);
+  overlay.querySelector('.js-edit-cancel').addEventListener('click', close);
+  overlay.addEventListener('click', (ev) => { if (ev.target === overlay) close(); });
+
+  const setStatus = (msg, kind) => {
+    statusEl.textContent = msg || '';
+    statusEl.className = 'fin-exp-status js-edit-status' + (kind ? ` ${kind}` : '');
+  };
+
+  const save = async () => {
+    const name = nameI.value.trim();
+    const amount = amtI.value.trim();
+    if (!name) { setStatus('Ingresá un nombre', 'error'); return; }
+    if (!amount) { setStatus('Ingresá un monto', 'error'); return; }
+    saveBtn.disabled = true;
+    setStatus('Guardando…');
+    try {
+      const r = await window.api.finances.updateExpense({
+        id: e.id,
+        name,
+        amount,
+        currency: curI.value,
+        kind: kindI.value,
+        billingDay: dayI.value.trim() || null,
+      });
+      if (r && r.ok) { close(); await renderFinanzas(); }
+      else setStatus((r && r.error) || 'Error', 'error');
+    } catch { setStatus('Error', 'error'); }
+    finally { saveBtn.disabled = false; }
+  };
+  saveBtn.addEventListener('click', save);
+  [nameI, amtI, dayI].forEach((i) => i.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') save(); }));
+
+  document.body.appendChild(overlay);
+  nameI.focus();
+}
+
+function renderExpenseModalList() {
+  if (!finExpModalEl) return;
+  const list = finExpModalEl.querySelector('.fin-exp-modal-list');
+  const count = finExpModalEl.querySelector('.fin-exp-modal-count');
+  if (count) count.textContent = finExpSorted.length ? `${finExpSorted.length} ítems` : '';
+  if (!list) return;
+  list.innerHTML = finExpSorted.length
+    ? finExpSorted.map(expenseItemHtml).join('')
+    : '<div class="fin-exp-empty">Sin gastos ni servicios.</div>';
+  wireExpenseRowActions(list);
+}
+
+function openExpenseModal() {
+  if (finExpModalEl) return;
+  const overlay = document.createElement('div');
+  overlay.className = 'fin-modal';
+  overlay.innerHTML = `
+    <div class="fin-modal-box fin-exp-modal-box">
+      <div class="fin-exp-modal-head">
+        <span class="fin-exp-modal-title">Gastos y Servicios <span class="fin-exp-modal-count"></span></span>
+        <button class="fin-modal-x js-modal-close" title="Cerrar">✕</button>
+      </div>
+      <div class="fin-exp-modal-list"></div>
+    </div>`;
+  const close = () => { overlay.remove(); finExpModalEl = null; };
+  overlay.querySelector('.js-modal-close').addEventListener('click', close);
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+  document.body.appendChild(overlay);
+  finExpModalEl = overlay;
+  renderExpenseModalList();
+}
+
 async function renderFinanzas() {
+  if (!finAccountsEl) return;
   let state;
   try {
     state = await window.api.finances.getState();
@@ -1045,18 +1346,102 @@ async function renderFinanzas() {
     finAccountsEl.innerHTML = '<div class="keys-empty">Error cargando finanzas.</div>';
     return;
   }
-  if (!state || !state.unlocked) { finUnlocked = false; return enterFinanzas(); }
 
-  const accounts = state.accounts || [];
+  const accounts = (state && state.accounts) || [];
 
-  // Totals per currency across all accounts.
-  let totUyu = 0, totUsd = 0;
-  for (const a of accounts) {
-    if (a.uyu) totUyu += a.uyu.value;
-    if (a.usd) totUsd += a.usd.value;
+  // Initialize the "hide values" toggle from the saved state, once.
+  if (!finHiddenLoaded) { finHidden = !!(state && state.hidden); finHiddenLoaded = true; }
+  const eyeBtn = $('fin-eye');
+  if (eyeBtn) {
+    eyeBtn.textContent = finHidden ? '🙈' : '👁';
+    eyeBtn.title = finHidden ? 'Mostrar valores' : 'Ocultar valores';
   }
-  $('fin-total').innerHTML =
-    `${fmtMoney(totUyu, 'UYU')}<span class="fin-total-sep">·</span>${fmtMoney(totUsd, 'USD')}`;
+
+  // Totals per currency across all accounts, plus the aggregate gain/loss vs each
+  // account's previous entry (sum of per-account deltas, skipping brand-new ones).
+  let totUyu = 0, totUsd = 0;
+  let dUyu = 0, dUsd = 0, hasDUyu = false, hasDUsd = false;
+  for (const a of accounts) {
+    if (a.uyu) {
+      totUyu += a.uyu.value;
+      if (a.uyu.delta != null) { dUyu += a.uyu.delta; hasDUyu = true; }
+    }
+    if (a.usd) {
+      totUsd += a.usd.value;
+      if (a.usd.delta != null) { dUsd += a.usd.delta; hasDUsd = true; }
+    }
+  }
+  const totalUyuEl = $('fin-total-uyu');
+  const totalUsdEl = $('fin-total-usd');
+  if (totalUyuEl) totalUyuEl.textContent = finHidden ? FIN_MASK : fmtPlain(totUyu);
+  if (totalUsdEl) totalUsdEl.textContent = finHidden ? FIN_MASK : fmtPlain(totUsd);
+  const totalUyuDeltaEl = $('fin-total-uyu-delta');
+  const totalUsdDeltaEl = $('fin-total-usd-delta');
+  if (totalUyuDeltaEl) totalUyuDeltaEl.innerHTML = (finHidden || !hasDUyu) ? '' : fmtDelta(dUyu, 'UYU');
+  if (totalUsdDeltaEl) totalUsdDeltaEl.innerHTML = (finHidden || !hasDUsd) ? '' : fmtDelta(dUsd, 'USD');
+
+  // Dashboard summary mirrors the estimated total (read-only, no deltas).
+  const sumUyuEl = $('fin-sum-uyu');
+  const sumUsdEl = $('fin-sum-usd');
+  if (sumUyuEl) sumUyuEl.textContent = finHidden ? FIN_MASK : fmtPlain(totUyu);
+  if (sumUsdEl) sumUsdEl.textContent = finHidden ? FIN_MASK : fmtPlain(totUsd);
+
+  // Gastos y servicios: monthly totals per currency + dashboard summary.
+  const expenses = (state && state.expenses) || [];
+  let svcUyu = 0, svcUsd = 0;
+  for (const e of expenses) {
+    if (String(e.currency).toUpperCase() === 'USD') svcUsd += e.amount || 0;
+    else svcUyu += e.amount || 0;
+  }
+  // Dashboard "Gastos totales" banner.
+  const sumSvcUyuEl = $('fin-sum-svc-uyu');
+  const sumSvcUsdEl = $('fin-sum-svc-usd');
+  const sumSvcCountEl = $('fin-sum-svc-count');
+  if (sumSvcUyuEl) sumSvcUyuEl.textContent = finHidden ? FIN_MASK : fmtPlain(svcUyu);
+  if (sumSvcUsdEl) sumSvcUsdEl.textContent = finHidden ? FIN_MASK : fmtPlain(svcUsd);
+  if (sumSvcCountEl) sumSvcCountEl.textContent = expenses.length
+    ? `· ${expenses.length} ${expenses.length === 1 ? 'ítem' : 'ítems'}` : '';
+  // Finanzas tab "Gastos totales" banner.
+  const expTotUyuEl = $('fin-exp-total-uyu');
+  const expTotUsdEl = $('fin-exp-total-usd');
+  if (expTotUyuEl) expTotUyuEl.textContent = finHidden ? FIN_MASK : fmtPlain(svcUyu);
+  if (expTotUsdEl) expTotUsdEl.textContent = finHidden ? FIN_MASK : fmtPlain(svcUsd);
+
+  // Reflect the active sort in the toggle buttons.
+  document.querySelectorAll('.fin-sort-btn').forEach((b) => {
+    b.classList.toggle('active', b.dataset.sort === finExpSort);
+  });
+
+  if (finExpensesEl) {
+    const byName = (a, b) => String(a.name).localeCompare(String(b.name), 'es', { sensitivity: 'base' });
+    finExpSorted = expenses.slice().sort((a, b) => {
+      if (finExpSort === 'day') {
+        // Sort by billing day (ascending); items without a day go last,
+        // ties broken by name.
+        const da = a.billing_day == null ? Infinity : a.billing_day;
+        const dbb = b.billing_day == null ? Infinity : b.billing_day;
+        return da !== dbb ? da - dbb : byName(a, b);
+      }
+      return byName(a, b);
+    });
+
+    if (!finExpSorted.length) {
+      finExpensesEl.innerHTML = '<div class="fin-exp-empty">Sin gastos ni servicios. Agregá uno arriba.</div>';
+    } else {
+      const shown = finExpSorted.slice(0, FIN_EXP_INLINE_LIMIT);
+      const more = finExpSorted.length - shown.length;
+      finExpensesEl.innerHTML = shown.map(expenseItemHtml).join('')
+        + (more > 0
+          ? `<button class="fin-exp-viewall js-exp-viewall">Ver toda la lista (${finExpSorted.length})</button>`
+          : '');
+      wireExpenseRowActions(finExpensesEl);
+      const viewAll = finExpensesEl.querySelector('.js-exp-viewall');
+      if (viewAll) viewAll.addEventListener('click', openExpenseModal);
+    }
+
+    // Keep the "ver todo" modal in sync if it's open.
+    if (finExpModalEl) renderExpenseModalList();
+  }
 
   finAccountsEl.innerHTML = accounts.map(accountCardHtml).join('');
   adjustWindowSize();
@@ -1088,57 +1473,122 @@ async function renderFinanzas() {
       });
     }
 
-    const credsToggle = card.querySelector('.js-creds-toggle');
-    if (credsToggle) {
-      credsToggle.addEventListener('click', () => {
-        card.querySelector('.fin-creds').classList.toggle('hidden');
-        adjustWindowSize();
+    const siteLink = card.querySelector('.js-site');
+    if (siteLink) {
+      siteLink.addEventListener('click', (e) => {
+        e.preventDefault();
+        const url = siteLink.dataset.url;
+        if (url) window.api.openExternal(url);
       });
     }
 
-    const saveCredsBtn = card.querySelector('.js-save-creds');
-    if (saveCredsBtn) {
-      saveCredsBtn.addEventListener('click', async () => {
-        const user = card.querySelector('.js-cred-user').value.trim();
-        const pass = card.querySelector('.js-cred-pass').value;
-        if (!user || !pass) { setCardStatus(card, 'Usuario y contraseña requeridos', 'error'); return; }
-        saveCredsBtn.disabled = true;
-        setCardStatus(card, 'Guardando…');
+    const clearBtn = card.querySelector('.js-clear');
+    if (clearBtn) {
+      clearBtn.addEventListener('click', async () => {
+        const name = card.querySelector('.fin-card-name')?.textContent || 'esta cuenta';
+        if (!(await finConfirm(`¿Borrar todas las entradas de ${name}?`))) return;
+        clearBtn.disabled = true;
+        setCardStatus(card, 'Limpiando…');
         try {
-          const r = await window.api.finances.saveCreds({ accountId: id, user, pass });
+          const r = await window.api.finances.clearAccount(id);
           if (r && r.ok) { await renderFinanzas(); }
           else setCardStatus(card, (r && r.error) || 'Error', 'error');
         } catch { setCardStatus(card, 'Error', 'error'); }
-        finally { saveCredsBtn.disabled = false; }
-      });
-    }
-
-    const refreshBtn = card.querySelector('.js-refresh');
-    if (refreshBtn) {
-      refreshBtn.addEventListener('click', async () => {
-        refreshBtn.disabled = true;
-        const orig = refreshBtn.textContent;
-        refreshBtn.textContent = '⏳ Capturando…';
-        setCardStatus(card, 'Se abrió la ventana del banco. Logueate, completá el 2FA y capturá el saldo.');
-        try {
-          const r = await window.api.finances.refreshBank(id);
-          if (r && r.ok) { setCardStatus(card, 'Saldo guardado ✓', 'success'); await renderFinanzas(); }
-          else if (r && r.cancelled) setCardStatus(card, 'Cancelado', '');
-          else setCardStatus(card, (r && r.error) || 'No se pudo capturar', 'error');
-        } catch { setCardStatus(card, 'Error', 'error'); }
-        finally { refreshBtn.disabled = false; refreshBtn.textContent = orig; }
+        finally { clearBtn.disabled = false; }
       });
     }
   });
 }
 
-finUnlockBtn.addEventListener('click', unlockFinanzas);
-finMaster.addEventListener('keydown', (e) => { if (e.key === 'Enter') unlockFinanzas(); });
-$('fin-lock-now').addEventListener('click', async () => {
-  try { await window.api.finances.lock(); } catch {}
-  finUnlocked = false;
-  enterFinanzas();
-});
+// "Limpiar todo" lives in the static total banner, so wire it up once.
+(function wireClearAll() {
+  const btn = $('fin-clear-all');
+  if (!btn) return;
+  btn.addEventListener('click', async () => {
+    if (!(await finConfirm('¿Borrar TODAS las entradas de todas las cuentas? Esta acción no se puede deshacer.'))) return;
+    btn.disabled = true;
+    try {
+      await window.api.finances.clearAll();
+      await renderFinanzas();
+    } catch {}
+    finally { btn.disabled = false; }
+  });
+})();
+
+// Eye toggle: hide/show all Finanzas values; the state is persisted in the db.
+(function wireEyeToggle() {
+  const btn = $('fin-eye');
+  if (!btn) return;
+  btn.addEventListener('click', () => {
+    finHidden = !finHidden;
+    finHiddenLoaded = true; // don't let the next render overwrite the choice
+    window.api.finances.setHidden(finHidden);
+    renderFinanzas();
+  });
+})();
+
+// Dashboard "Finanzas" summary card → jump to the full Finanzas tab.
+(function wireSummaryCard() {
+  const card = $('fin-summary-card');
+  if (!card) return;
+  card.addEventListener('click', () => switchTab('finanzas'));
+})();
+
+// Gastos y Servicios sort toggle (Nombre / Fecha).
+(function wireExpenseSort() {
+  document.querySelectorAll('.fin-sort-btn').forEach((b) => {
+    b.addEventListener('click', () => {
+      const next = b.dataset.sort;
+      if (next === finExpSort) return;
+      finExpSort = next;
+      renderFinanzas();
+    });
+  });
+})();
+
+// "Gastos y Servicios" add form (lives in the Finanzas tab, wired once).
+(function wireExpenseAdd() {
+  const btn = $('fin-exp-add-btn');
+  if (!btn) return;
+  const nameI = $('fin-exp-name'), amtI = $('fin-exp-amount'),
+        curI = $('fin-exp-cur'), kindI = $('fin-exp-kind'), dayI = $('fin-exp-day'),
+        statusEl = $('fin-exp-status');
+  const setStatus = (msg, kind) => {
+    if (!statusEl) return;
+    statusEl.textContent = msg || '';
+    statusEl.className = 'fin-exp-status' + (kind ? ` ${kind}` : '');
+  };
+  const submit = async () => {
+    const name = nameI.value.trim();
+    const amount = amtI.value.trim();
+    if (!name) { setStatus('Ingresá un nombre', 'error'); return; }
+    if (!amount) { setStatus('Ingresá un monto', 'error'); return; }
+    btn.disabled = true;
+    setStatus('Guardando…');
+    try {
+      const r = await window.api.finances.addExpense({
+        name,
+        amount,
+        currency: curI.value,
+        kind: kindI.value,
+        billingDay: dayI.value.trim() || null,
+      });
+      if (r && r.ok) {
+        nameI.value = ''; amtI.value = ''; dayI.value = '';
+        setStatus('');
+        await renderFinanzas();
+        nameI.focus();
+      } else {
+        setStatus((r && r.error) || 'Error', 'error');
+      }
+    } catch { setStatus('Error', 'error'); }
+    finally { btn.disabled = false; }
+  };
+  btn.addEventListener('click', submit);
+  [nameI, amtI, dayI].forEach((i) => {
+    if (i) i.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
+  });
+})();
 
 // ── Settings ───────────────────────────────────────────────────
 const autoLaunchCheckbox = $('setting-autolaunch');
@@ -1209,15 +1659,21 @@ autoLaunchCheckbox.addEventListener('change', async () => {
   refreshWeather();
   setInterval(refreshWeather, WEATHER_INTERVAL_MS);
 
+  refreshMarkets();
+  setInterval(refreshMarkets, MARKETS_INTERVAL_MS);
+
   refreshAI();
   setInterval(refreshAI, AI_INTERVAL_MS);
 
   loadSpeedtest();
 
+  renderFinanzas();
+
   // Tray "Refresh now" → re-fetch everything except speedtest (manual).
   window.api.onRefresh(() => {
     refreshSystem();
     refreshWeather();
+    refreshMarkets();
     refreshAI();
   });
 

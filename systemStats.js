@@ -1,5 +1,6 @@
 const os = require('os');
 const { execFile } = require('child_process');
+const netUsage = require('./netUsage');
 
 // ── CPU sampling: take two snapshots of cumulative tick counts ───
 let prevCpuTimes = sampleCpu();
@@ -109,9 +110,12 @@ async function network() {
   }
   prevNet = { rx: totalRx, tx: totalTx, t: now };
 
+  const monthly = netUsage.update(totalRx, totalTx);
+
   return {
     downBps,
     upBps,
+    monthly, // { month, rxBytes, txBytes } accumulated this calendar month
     adapters: arr.map(a => ({ name: a.Name })),
   };
 }

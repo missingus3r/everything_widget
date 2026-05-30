@@ -9,6 +9,9 @@ config.json
 *.sqlite
 finances.sqlite
 
+# Network usage accumulator (per-machine runtime state)
+netUsage.json
+
 # Logs / OS
 *.log
 .DS_Store
