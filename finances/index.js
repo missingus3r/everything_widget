@@ -57,7 +57,19 @@ async function getState() {
     accounts,
     expenses: db.listExpenses(),
     hidden: db.getSetting('hidden') === '1',
+    fxMonthly: db.getFxMonthly(),
   };
+}
+
+// Lock in the USD buy rate for a given month ("YYYY-MM"). Called as the live rate
+// arrives; the current month keeps updating while past months stay frozen.
+async function recordFx(ym, rate) {
+  await ensureDb();
+  const r = Number(rate);
+  if (!/^\d{4}-\d{2}$/.test(String(ym)) || !isFinite(r) || r <= 0) {
+    return { ok: false, error: 'datos de cotización inválidos' };
+  }
+  return { ok: true, fxMonthly: db.setFxMonth(ym, r) };
 }
 
 // Aggregate savings over time: at each distinct snapshot timestamp, sum the
@@ -140,6 +152,7 @@ async function clearAll() {
 
 const EXPENSE_CURRENCIES = ['UYU', 'USD'];
 const EXPENSE_KINDS = ['servicio', 'gasto', 'suscripcion'];
+const EXPENSE_FLOWS = ['gasto', 'ingreso'];
 
 async function listExpenses() {
   await ensureDb();
@@ -148,24 +161,32 @@ async function listExpenses() {
 
 // Validate + normalize the shared expense fields. Returns { value } on success
 // or { error } with a user-facing message.
-function normalizeExpense({ name, amount, currency, kind, billingDay } = {}) {
+function normalizeExpense({ name, amount, currency, kind, billingDay, flow, detail, txDate } = {}) {
   const nm = String(name == null ? '' : name).trim();
   if (!nm) return { error: 'ingresá un nombre' };
   const amt = numOrNull(amount);
   if (amt == null || amt <= 0) return { error: 'ingresá un monto válido' };
   const cur = EXPENSE_CURRENCIES.includes(String(currency).toUpperCase())
     ? String(currency).toUpperCase() : 'UYU';
-  const kd = EXPENSE_KINDS.includes(String(kind)) ? String(kind) : 'servicio';
-  let day = numOrNull(billingDay);
+  const fl = EXPENSE_FLOWS.includes(String(flow)) ? String(flow) : 'gasto';
+  // `kind` and `billing_day` only apply to gastos; incomes ignore both.
+  const kd = fl === 'ingreso'
+    ? 'gasto'
+    : (EXPENSE_KINDS.includes(String(kind)) ? String(kind) : 'servicio');
+  let day = fl === 'ingreso' ? null : numOrNull(billingDay);
   day = day == null ? null : Math.min(31, Math.max(1, Math.round(day)));
-  return { value: { name: nm, amount: amt, currency: cur, kind: kd, billingDay: day } };
+  const det = String(detail == null ? '' : detail).trim() || null;
+  let td = Number(txDate);
+  if (!isFinite(td) || td <= 0) td = Date.now();
+  return { value: { name: nm, amount: amt, currency: cur, kind: kd, billingDay: day, flow: fl, detail: det, txDate: td } };
 }
 
 async function addExpense(payload = {}) {
   await ensureDb();
   const { value, error } = normalizeExpense(payload);
   if (error) return { ok: false, error };
-  db.insertExpense(value.name, value.amount, value.currency, value.kind, value.billingDay, Date.now());
+  db.insertExpense(value.name, value.amount, value.currency, value.kind, value.billingDay,
+    Date.now(), value.flow, value.detail, value.txDate);
   return { ok: true };
 }
 
@@ -174,7 +195,8 @@ async function updateExpense(payload = {}) {
   if (payload.id == null) return { ok: false, error: 'id inválido' };
   const { value, error } = normalizeExpense(payload);
   if (error) return { ok: false, error };
-  db.updateExpense(payload.id, value.name, value.amount, value.currency, value.kind, value.billingDay);
+  db.updateExpense(payload.id, value.name, value.amount, value.currency, value.kind, value.billingDay,
+    value.flow, value.detail, value.txDate);
   return { ok: true };
 }
 
@@ -186,6 +208,6 @@ async function deleteExpense(id) {
 }
 
 module.exports = {
-  getState, getHistory, saveManual, clearAccount, clearAll, setHidden,
+  getState, getHistory, saveManual, clearAccount, clearAll, setHidden, recordFx,
   listExpenses, addExpense, updateExpense, deleteExpense,
 };

@@ -214,7 +214,7 @@
           </div>
         </div>
         <div class="fin-exp-total-banner">
-          <span class="fin-exp-total-label">Gastos totales <span class="fin-summary-svc-count" id="fin-sum-svc-count"></span></span>
+          <span class="fin-exp-total-label">Gastos fijos totales <span class="fin-summary-svc-count" id="fin-sum-svc-count"></span></span>
           <div class="fin-total-lines">
             <div class="fin-total-line">
               <span class="fin-total-cur">$U</span>
@@ -276,15 +276,10 @@
 
       <section class="card">
         <div class="card-head">
-          <span class="card-title">Gastos y Servicios</span>
-          <span class="fin-exp-sort">
-            <button class="fin-sort-btn active" data-sort="name">Nombre</button>
-            <button class="fin-sort-btn" data-sort="day">Día</button>
-            <button class="fin-sort-btn" data-sort="kind">Tipo</button>
-          </span>
+          <span class="card-title">Gastos e Ingresos</span>
         </div>
         <div class="fin-exp-total-banner">
-          <span class="fin-exp-total-label">Gastos totales</span>
+          <span class="fin-exp-total-label">Gastos fijos totales</span>
           <div class="fin-total-lines">
             <div class="fin-total-line">
               <span class="fin-total-cur">$U</span>
@@ -298,6 +293,10 @@
           </div>
         </div>
         <div class="fin-exp-add">
+          <div class="fin-flow-toggle" id="fin-exp-flow">
+            <button type="button" class="fin-flow-btn active" data-flow="gasto">Gasto</button>
+            <button type="button" class="fin-flow-btn" data-flow="ingreso">Ingreso</button>
+          </div>
           <input id="fin-exp-name" class="fin-input" placeholder="Nombre (ej. Netflix, UTE, Alquiler)" autocomplete="off">
           <div class="fin-exp-add-row">
             <input id="fin-exp-amount" class="fin-input" type="text" inputmode="decimal" placeholder="Monto" autocomplete="off">
@@ -305,17 +304,45 @@
               <option value="UYU">$U</option>
               <option value="USD">U$S</option>
             </select>
-            <select id="fin-exp-kind" class="fin-select" title="Tipo">
+            <select id="fin-exp-kind" class="fin-select fin-field-gasto" title="Tipo">
               <option value="servicio">Servicio</option>
               <option value="gasto">Gasto</option>
               <option value="suscripcion">Suscripción</option>
             </select>
-            <input id="fin-exp-day" class="fin-input fin-input-day" type="text" inputmode="numeric" placeholder="Día" title="Día de cobro (opcional)" autocomplete="off">
+            <input id="fin-exp-day" class="fin-input fin-input-day fin-field-gasto" type="text" inputmode="numeric" placeholder="Día" title="Día de cobro → gasto mensual recurrente. Vacío = gasto eventual de ese mes." autocomplete="off">
+          </div>
+          <input id="fin-exp-detail" class="fin-input fin-field-ingreso" list="fin-detail-suggestions" placeholder="Detalle (ej. Salario, PCM, Aguinaldo)" autocomplete="off" hidden>
+          <datalist id="fin-detail-suggestions">
+            <option value="Salario"></option>
+            <option value="PCM"></option>
+            <option value="Aguinaldo"></option>
+            <option value="Bono"></option>
+            <option value="Reintegro"></option>
+            <option value="Venta"></option>
+            <option value="Intereses"></option>
+            <option value="Freelance"></option>
+            <option value="Alquiler"></option>
+          </datalist>
+          <div class="fin-exp-add-row">
+            <input id="fin-exp-date" class="fin-input" type="date" title="Fecha del movimiento" autocomplete="off">
             <button id="fin-exp-add-btn" class="fin-btn">+ Agregar</button>
           </div>
           <div class="fin-exp-status" id="fin-exp-status"></div>
         </div>
         <div id="fin-expenses" class="fin-expenses">
+          <div class="ai-loading">Cargando…</div>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="card-head">
+          <span class="card-title">Balance mensual</span>
+          <span class="fin-month-legend">
+            <span class="fin-month-legend-in">Ingresos</span>
+            <span class="fin-month-legend-out">Gastos</span>
+          </span>
+        </div>
+        <div id="fin-monthly" class="fin-monthly">
           <div class="ai-loading">Cargando…</div>
         </div>
       </section>

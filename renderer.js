@@ -9,8 +9,8 @@ let speedtestRunning = false;
 let lastAIRefreshAt = 0;
 
 const SYS_INTERVAL_MS = 2000;
-const WEATHER_INTERVAL_MS = 15 * 60 * 1000;
-const MARKETS_INTERVAL_MS = 5 * 60 * 1000;
+const WEATHER_INTERVAL_MS = 15 * 60 * 1000;  // clima: cada 15 min
+const MARKETS_INTERVAL_MS = 15 * 60 * 1000;  // crypto + divisas: cada 15 min
 let AI_INTERVAL_MS = 15 * 60 * 1000;
 
 // ── Pricing & plan label ───────────────────────────────────────
@@ -395,11 +395,23 @@ async function refreshMarkets() {
     const usd = m && m.fx && m.fx.dolarapi && m.fx.dolarapi.USD;
     if (usd && usd.compra && usd.venta) {
       finUsdRate = { compra: usd.compra, venta: usd.venta };
+      // Lock in the current month's rate; it keeps updating while the month is
+      // open and freezes once it closes, so past balances stop moving.
+      const curYm = monthKey(Date.now());
+      finMonthlyFx[curYm] = usd.compra;
+      window.api.finances.recordFx(curYm, usd.compra).catch(() => {});
       paintConvertedTotals();
       // Refresh charts (the "por tipo" chart converts USD items) without a full
       // re-render, so any balance the user is typing isn't wiped.
       if (finChartsEl && finLastExpenses.length) {
         renderFinanzasCharts(finLastAccounts, finLastExpenses);
+      }
+      // The monthly summary also converts USD movements to pesos; keep the open
+      // modals in sync with the refreshed card (and its new rate).
+      if (finMonthlyEl && finLastExpenses.length) {
+        renderMonthly();
+        if (finMonthModalEl) renderMonthModalList();
+        if (finBalancesModalEl) renderBalancesModalList();
       }
     }
   } catch (e) {
@@ -1067,17 +1079,25 @@ keyValue.addEventListener('keydown', (e) => {
 const finAccountsEl = $('fin-accounts');
 const finExpensesEl = $('fin-expenses');
 const finChartsEl = $('fin-charts');
+const finMonthlyEl = $('fin-monthly');
 let finHidden = false;        // "hide values" toggle (persisted in the db)
 let finHiddenLoaded = false;  // becomes true once we've read the saved state
-let finExpSort = 'name';      // gastos y servicios sort: 'name' | 'day' | 'kind'
+let finExpSort = 'date';      // movimientos sort: 'date' | 'name' | 'day' | 'kind'
+let finExpFlow = 'gasto';     // add-form flow toggle: 'gasto' | 'ingreso'
 let finUsdRate = null;        // { compra, venta } from DolarAPI, for UYU↔USD conversion
+let finMonthlyFx = {};        // { "YYYY-MM": usd buy rate } locked per closed month
 let finTotals = { uyu: 0, usd: 0 };   // last computed savings totals (per currency)
 let finSvc = { uyu: 0, usd: 0 };      // last computed gastos+servicios totals (per currency)
 let finLastAccounts = [];     // cached for chart re-render when the rate arrives
 let finLastExpenses = [];
-let finExpSorted = [];        // latest sorted expenses (shared with the "ver todo" modal)
-let finExpModalEl = null;     // the open "ver toda la lista" modal overlay, if any
-const FIN_EXP_INLINE_LIMIT = 10; // how many expenses to show inline before "ver todo"
+let finExpSorted = [];        // the 5 most recently entered movements (inline preview)
+let finMonthModalEl = null;   // the open "movimientos del mes" modal overlay, if any
+let finMonthModalKey = null;  // which month (YYYY-MM) that modal is showing
+let finBalancesModalEl = null; // the open "todos los balances" modal overlay, if any
+let finMonthlyCache = [];      // last buckets rendered by renderMonthly — single source of truth so
+                               // the modals show the exact same totals as the visible "Balance mensual" list
+const FIN_EXP_INLINE_LIMIT = 5; // how many movements to show inline before "ver todo"
+const FIN_MONTHLY_INLINE = 3;   // how many monthly balances to show inline before "ver todos"
 
 // In-app confirmation modal. We deliberately avoid the native window.confirm():
 // on this frameless + transparent + always-on-top window, the OS dialog steals
@@ -1198,18 +1218,102 @@ function setCardStatus(card, msg, kind) {
 const EXP_KINDS = ['servicio', 'gasto', 'suscripcion'];
 const EXP_KIND_LABELS = { servicio: 'Servicio', gasto: 'Gasto', suscripcion: 'Suscripción' };
 function expKind(e) { return EXP_KINDS.includes(e.kind) ? e.kind : 'servicio'; }
+function expFlow(e) { return e && e.flow === 'ingreso' ? 'ingreso' : 'gasto'; }
+// A movement's effective date: tx_date, falling back to created_at.
+function expTxDate(e) { return (e && (e.tx_date || e.created_at)) || Date.now(); }
+
+// "YYYY-MM" bucket key (local time) used to group movements by month.
+function monthKey(ts) {
+  const d = new Date(ts);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+}
+// Month arithmetic via a single integer index (year*12 + month), so we can step
+// month-by-month when projecting recurring expenses forward.
+function ymToIndex(ym) { const [y, m] = ym.split('-').map(Number); return y * 12 + (m - 1); }
+function indexToYm(idx) { return `${Math.floor(idx / 12)}-${String((idx % 12) + 1).padStart(2, '0')}`; }
+function currentMonthIndex() { const d = new Date(); return d.getFullYear() * 12 + d.getMonth(); }
+
+// A gasto with a billing day recurs every month; without one it's an eventual
+// expense that only counts in the month of its date. Ingresos are always eventual.
+function isRecurringGasto(e) { return expFlow(e) === 'gasto' && e.billing_day != null; }
+function monthLabel(ym) {
+  const [y, m] = ym.split('-').map(Number);
+  const s = new Date(y, m - 1, 1).toLocaleDateString('es-UY', { month: 'long', year: 'numeric' });
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+function finDayMonth(ts) {
+  return new Date(ts).toLocaleDateString('es-UY', { day: '2-digit', month: '2-digit' });
+}
+// Value a movement in pesos. A USD movement is converted with `rate` when given
+// (the month's locked rate), otherwise with the live buy rate, falling back to
+// the nominal amount when no rate is known yet.
+function expToUyu(e, rate) {
+  const amt = e.amount || 0;
+  if (String(e.currency).toUpperCase() !== 'USD') return amt;
+  const r = rate != null ? rate : (finUsdRate && finUsdRate.compra);
+  return r ? amt * r : amt;
+}
+
+// The USD buy rate to value a given month with. A closed (past) month uses its
+// locked rate (the latest recorded on or before it) so its balance doesn't move
+// when the live rate changes; the current/future month uses the live rate.
+function usdRateForMonth(ym) {
+  const live = (finUsdRate && finUsdRate.compra) || null;
+  const curYm = indexToYm(currentMonthIndex());
+  if (ym >= curYm) return live;
+  if (finMonthlyFx[ym] != null) return finMonthlyFx[ym];
+  let bestYm = null;
+  for (const k of Object.keys(finMonthlyFx)) {
+    if (k <= ym && (bestYm == null || k > bestYm)) bestYm = k;
+  }
+  return bestYm != null ? finMonthlyFx[bestYm] : live;
+}
+
+// <input type="date"> value (YYYY-MM-DD, local) ⇄ epoch ms (anchored at noon to
+// avoid a day rolling over across DST/timezone boundaries).
+function tsToDateInput(ts) {
+  const d = new Date(ts);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+function dateInputToTs(str) {
+  if (!str) return null;
+  const [y, m, d] = String(str).split('-').map(Number);
+  if (!y || !m || !d) return null;
+  return new Date(y, m - 1, d, 12, 0, 0).getTime();
+}
+
+// Reflect the chosen flow ('gasto' | 'ingreso') in a form scope: highlight the
+// active toggle button and show only that flow's fields. The .fin-field-gasto /
+// .fin-field-ingreso classes live in both the add form and the edit modal.
+function applyFlowFields(scope, flow) {
+  scope.querySelectorAll('.fin-flow-btn').forEach((b) =>
+    b.classList.toggle('active', b.dataset.flow === flow));
+  scope.querySelectorAll('.fin-field-gasto').forEach((el) => { el.hidden = (flow !== 'gasto'); });
+  scope.querySelectorAll('.fin-field-ingreso').forEach((el) => { el.hidden = (flow !== 'ingreso'); });
+}
 
 function expenseItemHtml(e) {
-  const kind = expKind(e);
+  const flow = expFlow(e);
+  const isIn = flow === 'ingreso';
   const amt = finHidden ? FIN_MASK : fmtMoney(e.amount, e.currency);
-  const dayBadge = e.billing_day
-    ? `<span class="fin-exp-day-badge" title="Día de cobro">día ${e.billing_day}</span>` : '';
+  const sign = (isIn && !finHidden) ? '+ ' : '';
+  const tag = isIn
+    ? `<span class="fin-exp-kind fin-exp-kind-ingreso">Ingreso</span>`
+    : `<span class="fin-exp-kind fin-exp-kind-${expKind(e)}">${EXP_KIND_LABELS[expKind(e)]}</span>`;
+  const detailBadge = (isIn && e.detail)
+    ? `<span class="fin-exp-detail-badge" title="Detalle">${escapeHtml(e.detail)}</span>` : '';
+  // Recurring expense → "día X" (repeats monthly); eventual → its date.
+  const recurring = isRecurringGasto(e);
+  const dayBadge = recurring
+    ? `<span class="fin-exp-day-badge" title="Gasto mensual · día de cobro">mensual · día ${e.billing_day}</span>` : '';
+  const dateBadge = !recurring
+    ? `<span class="fin-exp-date-badge" title="Fecha">${finDayMonth(expTxDate(e))}</span>` : '';
   return `
-    <div class="fin-exp-item" data-id="${e.id}">
-      <span class="fin-exp-kind fin-exp-kind-${kind}">${EXP_KIND_LABELS[kind]}</span>
+    <div class="fin-exp-item fin-exp-${flow}" data-id="${e.id}">
+      ${tag}
       <span class="fin-exp-name">${escapeHtml(e.name)}</span>
-      ${dayBadge}
-      <span class="fin-exp-amt">${amt}</span>
+      ${detailBadge}${dayBadge}${dateBadge}
+      <span class="fin-exp-amt">${sign}${amt}</span>
       <button class="fin-exp-edit js-exp-edit" title="Editar">✎</button>
       <button class="fin-exp-del js-exp-del" title="Borrar">✕</button>
     </div>`;
@@ -1238,7 +1342,7 @@ function wireExpenseRowActions(container) {
       const item = b.closest('.fin-exp-item');
       const id = item && item.dataset.id;
       if (!id) return;
-      const exp = finExpSorted.find((e) => String(e.id) === String(id));
+      const exp = finLastExpenses.find((e) => String(e.id) === String(id));
       if (exp) openExpenseEditModal(exp);
     });
   });
@@ -1252,8 +1356,12 @@ function openExpenseEditModal(e) {
   overlay.innerHTML = `
     <div class="fin-modal-box fin-exp-edit-box">
       <div class="fin-exp-modal-head">
-        <span class="fin-exp-modal-title">Editar gasto / servicio</span>
+        <span class="fin-exp-modal-title">Editar movimiento</span>
         <button class="fin-modal-x js-edit-close" title="Cerrar">✕</button>
+      </div>
+      <div class="fin-flow-toggle js-edit-flow">
+        <button type="button" class="fin-flow-btn" data-flow="gasto">Gasto</button>
+        <button type="button" class="fin-flow-btn" data-flow="ingreso">Ingreso</button>
       </div>
       <input class="fin-input js-edit-name" placeholder="Nombre" autocomplete="off">
       <div class="fin-exp-add-row">
@@ -1262,12 +1370,16 @@ function openExpenseEditModal(e) {
           <option value="UYU">$U</option>
           <option value="USD">U$S</option>
         </select>
-        <select class="fin-select js-edit-kind" title="Tipo">
+        <select class="fin-select fin-field-gasto js-edit-kind" title="Tipo">
           <option value="servicio">Servicio</option>
           <option value="gasto">Gasto</option>
           <option value="suscripcion">Suscripción</option>
         </select>
-        <input class="fin-input fin-input-day js-edit-day" type="text" inputmode="numeric" placeholder="Día" title="Día de cobro (opcional)" autocomplete="off">
+        <input class="fin-input fin-input-day fin-field-gasto js-edit-day" type="text" inputmode="numeric" placeholder="Día" title="Día de cobro → gasto mensual recurrente. Vacío = gasto eventual de ese mes." autocomplete="off">
+      </div>
+      <input class="fin-input fin-field-ingreso js-edit-detail" list="fin-detail-suggestions" placeholder="Detalle (ej. Salario, PCM, Aguinaldo)" autocomplete="off">
+      <div class="fin-exp-add-row">
+        <input class="fin-input js-edit-date" type="date" title="Fecha del movimiento" autocomplete="off">
       </div>
       <div class="fin-exp-status js-edit-status"></div>
       <div class="fin-modal-actions">
@@ -1281,14 +1393,24 @@ function openExpenseEditModal(e) {
   const curI = overlay.querySelector('.js-edit-cur');
   const kindI = overlay.querySelector('.js-edit-kind');
   const dayI = overlay.querySelector('.js-edit-day');
+  const detailI = overlay.querySelector('.js-edit-detail');
+  const dateI = overlay.querySelector('.js-edit-date');
   const statusEl = overlay.querySelector('.js-edit-status');
   const saveBtn = overlay.querySelector('.js-edit-save');
 
+  let flow = expFlow(e);
   nameI.value = e.name || '';
   amtI.value = e.amount != null ? fmtPlain(e.amount) : '';
   curI.value = String(e.currency || 'UYU').toUpperCase() === 'USD' ? 'USD' : 'UYU';
   kindI.value = expKind(e);
   dayI.value = e.billing_day != null ? e.billing_day : '';
+  detailI.value = e.detail || '';
+  dateI.value = tsToDateInput(expTxDate(e));
+  applyFlowFields(overlay, flow);
+
+  overlay.querySelectorAll('.js-edit-flow .fin-flow-btn').forEach((b) => {
+    b.addEventListener('click', () => { flow = b.dataset.flow; applyFlowFields(overlay, flow); });
+  });
 
   const close = () => overlay.remove();
   overlay.querySelector('.js-edit-close').addEventListener('click', close);
@@ -1315,6 +1437,9 @@ function openExpenseEditModal(e) {
         currency: curI.value,
         kind: kindI.value,
         billingDay: dayI.value.trim() || null,
+        flow,
+        detail: flow === 'ingreso' ? detailI.value.trim() : null,
+        txDate: dateInputToTs(dateI.value),
       });
       if (r && r.ok) { close(); await renderFinanzas(); }
       else setStatus((r && r.error) || 'Error', 'error');
@@ -1322,42 +1447,301 @@ function openExpenseEditModal(e) {
     finally { saveBtn.disabled = false; }
   };
   saveBtn.addEventListener('click', save);
-  [nameI, amtI, dayI].forEach((i) => i.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') save(); }));
+  [nameI, amtI, dayI, detailI].forEach((i) => i.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') save(); }));
 
   document.body.appendChild(overlay);
   nameI.focus();
 }
 
-function renderExpenseModalList() {
-  if (!finExpModalEl) return;
-  const list = finExpModalEl.querySelector('.fin-exp-modal-list');
-  const count = finExpModalEl.querySelector('.fin-exp-modal-count');
-  if (count) count.textContent = finExpSorted.length ? `${finExpSorted.length} ítems` : '';
-  if (!list) return;
-  list.innerHTML = finExpSorted.length
-    ? finExpSorted.map(expenseItemHtml).join('')
-    : '<div class="fin-exp-empty">Sin gastos ni servicios.</div>';
-  wireExpenseRowActions(list);
+// ── Balance mensual: resumen ingresos vs gastos por mes ──────────
+
+// The movements that count toward a given month index: every eventual movement
+// dated that month, plus every recurring gasto. Recurring gastos are fixed
+// monthly expenses, so they repeat every month of the visible timeline —
+// backward and forward from when they were added, not just forward.
+function movementsForMonthIdx(idx, expenses) {
+  const out = [];
+  for (const e of (expenses || [])) {
+    if (isRecurringGasto(e)) {
+      out.push(e);
+    } else {
+      const startIdx = ymToIndex(monthKey(expTxDate(e)));
+      if (startIdx === idx) out.push(e);
+    }
+  }
+  return out;
 }
 
-function openExpenseModal() {
-  if (finExpModalEl) return;
+// Bucket movements by month (newest first), valuing everything in pesos.
+// Recurring expenses fill the whole visible timeline (earliest movement →
+// current month, both directions); eventual movements (ingresos and gastos sin
+// día) land only in their own month.
+function finMonthlyBuckets(expenses) {
+  const list = expenses || [];
+  if (!list.length) return [];
+  const curIdx = currentMonthIndex();
+  const months = new Set();
+  let minIdx = curIdx, maxIdx = curIdx, hasRecurring = false;
+  for (const e of list) {
+    const startIdx = ymToIndex(monthKey(expTxDate(e)));
+    if (startIdx < minIdx) minIdx = startIdx;
+    if (startIdx > maxIdx) maxIdx = startIdx;
+    if (isRecurringGasto(e)) hasRecurring = true;
+    else months.add(startIdx); // eventual movements anchor their own month
+  }
+  // With any recurring gasto, every month in the timeline carries it, so fill
+  // the contiguous range; without one, keep only months that have a movement.
+  if (hasRecurring) {
+    for (let i = minIdx; i <= maxIdx; i++) months.add(i);
+  }
+  return Array.from(months).sort((a, b) => b - a).map((idx) => {
+    const ym = indexToYm(idx);
+    const rate = usdRateForMonth(ym); // locked for closed months, live for the current one
+    let inUyu = 0, outUyu = 0, count = 0;
+    for (const e of movementsForMonthIdx(idx, list)) {
+      if (expFlow(e) === 'ingreso') inUyu += expToUyu(e, rate); else outUyu += expToUyu(e, rate);
+      count += 1;
+    }
+    return { ym, inUyu, outUyu, count };
+  });
+}
+
+// Balance display: an exact zero (within rounding) is neutral/gray and unsigned,
+// so a rounding-dust value like -0,00 isn't shown as a red loss.
+function netParts(net) {
+  if (finHidden) return { cls: 'zero', str: FIN_MASK };
+  if (Math.abs(net) < 0.005) return { cls: 'zero', str: fmtMoney(0, 'UYU') };
+  return { cls: net > 0 ? 'pos' : 'neg', str: `${net > 0 ? '+' : '−'} ${fmtMoney(Math.abs(net), 'UYU')}` };
+}
+
+// One clickable month-balance row, shared by the inline card and the "todos los
+// balances" modal. Clicking it opens that month's movements modal.
+function monthRowHtml(b) {
+  const money = (v) => finHidden ? FIN_MASK : fmtMoney(v, 'UYU');
+  const net = netParts(b.inUyu - b.outUyu);
+  return `
+    <button class="fin-month-row" data-ym="${b.ym}" title="Ver movimientos de ${monthLabel(b.ym)}">
+      <span class="fin-month-name">${monthLabel(b.ym)}</span>
+      <span class="fin-month-net ${net.cls}" title="Balance">${net.str}</span>
+      <span class="fin-month-chevron">›</span>
+      <span class="fin-month-figs">
+        <span class="fin-month-in" title="Ingresos">+ ${money(b.inUyu)}</span>
+        <span class="fin-month-out" title="Gastos">− ${money(b.outUyu)}</span>
+      </span>
+    </button>`;
+}
+
+function renderMonthly() {
+  if (!finMonthlyEl) return;
+  const buckets = finMonthlyBuckets(finLastExpenses);
+  finMonthlyCache = buckets; // so the modals read the same snapshot/rate as the card
+  if (!buckets.length) {
+    finMonthlyEl.innerHTML = '<div class="fin-exp-empty">Sin movimientos todavía. Agregá gastos o ingresos arriba.</div>';
+    return;
+  }
+  let html = buckets.slice(0, FIN_MONTHLY_INLINE).map(monthRowHtml).join('');
+  if (buckets.length > FIN_MONTHLY_INLINE) {
+    html += `<button class="fin-exp-viewall js-balances-viewall">Ver todos los balances (${buckets.length})</button>`;
+  }
+  finMonthlyEl.innerHTML = html;
+  finMonthlyEl.querySelectorAll('.fin-month-row').forEach((row) => {
+    row.addEventListener('click', () => openMonthModal(row.dataset.ym));
+  });
+  const viewAll = finMonthlyEl.querySelector('.js-balances-viewall');
+  if (viewAll) viewAll.addEventListener('click', openBalancesModal);
+}
+
+// Re-render the "todos los balances" modal list in place (called on data changes
+// while it's open).
+function renderBalancesModalList() {
+  if (!finBalancesModalEl) return;
+  const buckets = finMonthlyCache;
+  const listEl = finBalancesModalEl.querySelector('.js-balances-list');
+  const countEl = finBalancesModalEl.querySelector('.js-balances-count');
+  if (countEl) countEl.textContent = buckets.length
+    ? `${buckets.length} ${buckets.length === 1 ? 'mes' : 'meses'}` : '';
+  if (listEl) {
+    listEl.innerHTML = buckets.length
+      ? buckets.map(monthRowHtml).join('')
+      : '<div class="fin-exp-empty">Sin movimientos todavía.</div>';
+    listEl.querySelectorAll('.fin-month-row').forEach((row) => {
+      row.addEventListener('click', () => openMonthModal(row.dataset.ym));
+    });
+  }
+}
+
+// Modal listing every monthly balance (newest first). Rows open the per-month
+// movements modal on top.
+function openBalancesModal() {
+  if (finBalancesModalEl) { renderBalancesModalList(); return; }
   const overlay = document.createElement('div');
   overlay.className = 'fin-modal';
   overlay.innerHTML = `
-    <div class="fin-modal-box fin-exp-modal-box">
+    <div class="fin-modal-box fin-exp-modal-box fin-month-modal-box">
       <div class="fin-exp-modal-head">
-        <span class="fin-exp-modal-title">Gastos y Servicios <span class="fin-exp-modal-count"></span></span>
-        <button class="fin-modal-x js-modal-close" title="Cerrar">✕</button>
+        <span class="fin-exp-modal-title">Balance mensual <span class="fin-exp-modal-count js-balances-count"></span></span>
+        <button class="fin-modal-x js-balances-close" title="Cerrar">✕</button>
       </div>
-      <div class="fin-exp-modal-list"></div>
+      <div class="fin-exp-modal-list fin-monthly js-balances-list"></div>
     </div>`;
-  const close = () => { overlay.remove(); finExpModalEl = null; };
-  overlay.querySelector('.js-modal-close').addEventListener('click', close);
+  const close = () => {
+    overlay.remove(); finBalancesModalEl = null;
+    document.removeEventListener('keydown', onKey);
+  };
+  // Don't close while a per-month modal is stacked on top — let Escape close that first.
+  const onKey = (e) => { if (e.key === 'Escape' && !finMonthModalEl) close(); };
+  overlay.querySelector('.js-balances-close').addEventListener('click', close);
   overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+  document.addEventListener('keydown', onKey);
   document.body.appendChild(overlay);
-  finExpModalEl = overlay;
-  renderExpenseModalList();
+  finBalancesModalEl = overlay;
+  renderBalancesModalList();
+}
+
+// Chronological list of months that have movements (oldest → newest), used to
+// drive the modal's prev/next navigation cyclically.
+function finMonthKeysAsc() {
+  return finMonthlyBuckets(finLastExpenses).map((b) => b.ym).sort();
+}
+
+// Move the open month modal to the previous (-1) or next (+1) month, wrapping
+// around the ends like a carousel.
+function stepMonthModal(dir) {
+  const keys = finMonthKeysAsc();
+  if (!keys.length) return;
+  let i = keys.indexOf(finMonthModalKey);
+  if (i < 0) i = keys.length - 1;
+  finMonthModalKey = keys[(i + dir + keys.length) % keys.length];
+  renderMonthModalList();
+}
+
+// Shared expense ordering used by both the inline list and the month modal, so
+// the Fecha/Nombre/Día/Tipo buttons mean the same thing everywhere.
+function sortExpensesBy(arr, mode) {
+  const byName = (a, b) => String(a.name).localeCompare(String(b.name), 'es', { sensitivity: 'base' });
+  const KIND_RANK = { gasto: 0, servicio: 1, suscripcion: 2 };
+  // Day-of-month: recurring by billing day, eventual by its transaction date.
+  const dayOf = (e) => isRecurringGasto(e)
+    ? (e.billing_day == null ? 99 : e.billing_day)
+    : new Date(expTxDate(e)).getDate();
+  return arr.slice().sort((a, b) => {
+    if (mode === 'name') return byName(a, b);
+    if (mode === 'day') {
+      const d = dayOf(a) - dayOf(b);
+      return d !== 0 ? d : byName(a, b);
+    }
+    if (mode === 'kind') {
+      // Ingresos form their own group (their `kind` is a leftover from the gasto
+      // form), so they don't get interleaved with gasto/servicio/suscripción.
+      const rank = (e) => expFlow(e) === 'ingreso' ? 3 : (KIND_RANK[expKind(e)] ?? 9);
+      const ra = rank(a), rb = rank(b);
+      return ra !== rb ? ra - rb : byName(a, b);
+    }
+    // 'date' (default): most recent movement first, ties broken by name.
+    const ta = expTxDate(a), tb = expTxDate(b);
+    return ta !== tb ? tb - ta : byName(a, b);
+  });
+}
+
+// Modal listing every movement of one month, with running totals + month
+// navigation. Reuses the shared expense rows (edit/delete) and stays in sync
+// across re-renders. Recurring expenses show in every month; eventual ones only
+// in their own.
+function renderMonthModalList() {
+  if (!finMonthModalEl || finMonthModalKey == null) return;
+  const idx = ymToIndex(finMonthModalKey);
+  const items = sortExpensesBy(movementsForMonthIdx(idx, finLastExpenses), finExpSort);
+  // Reflect the active sort in the modal's toggle buttons.
+  finMonthModalEl.querySelectorAll('.fin-month-modal-sort .fin-sort-btn').forEach((b) => {
+    b.classList.toggle('active', b.dataset.sort === finExpSort);
+  });
+  const titleEl = finMonthModalEl.querySelector('.js-month-title');
+  if (titleEl) titleEl.textContent = monthLabel(finMonthModalKey);
+  // Hide the nav arrows when there's only a single month to show.
+  const multi = finMonthKeysAsc().length > 1;
+  finMonthModalEl.querySelectorAll('.fin-month-nav-btn').forEach((b) => { b.disabled = !multi; });
+  const countEl = finMonthModalEl.querySelector('.js-month-count');
+  const totalsEl = finMonthModalEl.querySelector('.js-month-totals');
+  const listEl = finMonthModalEl.querySelector('.js-month-list');
+  if (countEl) countEl.textContent = items.length
+    ? `${items.length} ${items.length === 1 ? 'movimiento' : 'movimientos'}` : '';
+  // Reuse the exact totals from the "Balance mensual" list (same cached snapshot,
+  // same dollar rate) so the modal can't disagree with the row you opened (e.g.
+  // list 0,00 vs modal −0,01 from USD conversion rounding). Fall back to summing
+  // the items only if the cached bucket is gone.
+  const bucket = finMonthlyCache.find((b) => b.ym === finMonthModalKey);
+  let inUyu = 0, outUyu = 0;
+  if (bucket) {
+    inUyu = bucket.inUyu; outUyu = bucket.outUyu;
+  } else {
+    for (const e of items) { if (expFlow(e) === 'ingreso') inUyu += expToUyu(e); else outUyu += expToUyu(e); }
+  }
+  const net = netParts(inUyu - outUyu);
+  if (totalsEl) {
+    const money = (v) => finHidden ? FIN_MASK : fmtMoney(v, 'UYU');
+    totalsEl.innerHTML = `
+      <span class="fin-month-tot in"><span class="fin-month-tot-lbl">Ingresos</span><span class="fin-month-tot-val">${money(inUyu)}</span></span>
+      <span class="fin-month-tot out"><span class="fin-month-tot-lbl">Gastos</span><span class="fin-month-tot-val">${money(outUyu)}</span></span>
+      <span class="fin-month-tot net ${net.cls}"><span class="fin-month-tot-lbl">Balance</span><span class="fin-month-tot-val">${net.str}</span></span>`;
+  }
+  if (listEl) {
+    listEl.innerHTML = items.length
+      ? items.map(expenseItemHtml).join('')
+      : '<div class="fin-exp-empty">Sin movimientos este mes.</div>';
+    wireExpenseRowActions(listEl);
+  }
+}
+
+function openMonthModal(ym) {
+  finMonthModalKey = ym;
+  if (finMonthModalEl) { renderMonthModalList(); return; }
+  const overlay = document.createElement('div');
+  overlay.className = 'fin-modal';
+  overlay.innerHTML = `
+    <div class="fin-modal-box fin-exp-modal-box fin-month-modal-box">
+      <div class="fin-exp-modal-head fin-month-modal-head">
+        <div class="fin-month-nav">
+          <button class="fin-month-nav-btn js-month-prev" title="Mes anterior">‹</button>
+          <span class="fin-month-nav-label js-month-title"></span>
+          <button class="fin-month-nav-btn js-month-next" title="Mes siguiente">›</button>
+        </div>
+        <button class="fin-modal-x js-month-close" title="Cerrar">✕</button>
+      </div>
+      <div class="fin-month-modal-sub"><span class="fin-exp-modal-count js-month-count"></span></div>
+      <div class="fin-month-modal-totals js-month-totals"></div>
+      <div class="fin-exp-sort fin-month-modal-sort">
+        <button class="fin-sort-btn" data-sort="date">Fecha</button>
+        <button class="fin-sort-btn" data-sort="name">Nombre</button>
+        <button class="fin-sort-btn" data-sort="day">Día</button>
+        <button class="fin-sort-btn" data-sort="kind">Tipo</button>
+      </div>
+      <div class="fin-exp-modal-list js-month-list"></div>
+    </div>`;
+  const close = () => {
+    overlay.remove(); finMonthModalEl = null; finMonthModalKey = null;
+    document.removeEventListener('keydown', onKey);
+  };
+  const onKey = (e) => {
+    if (e.key === 'ArrowLeft') { e.preventDefault(); stepMonthModal(-1); }
+    else if (e.key === 'ArrowRight') { e.preventDefault(); stepMonthModal(1); }
+    else if (e.key === 'Escape') close();
+  };
+  overlay.querySelector('.js-month-close').addEventListener('click', close);
+  overlay.querySelector('.js-month-prev').addEventListener('click', (e) => { e.stopPropagation(); stepMonthModal(-1); });
+  overlay.querySelector('.js-month-next').addEventListener('click', (e) => { e.stopPropagation(); stepMonthModal(1); });
+  overlay.querySelectorAll('.fin-month-modal-sort .fin-sort-btn').forEach((b) => {
+    b.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (b.dataset.sort === finExpSort) return;
+      finExpSort = b.dataset.sort;
+      renderMonthModalList();
+    });
+  });
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+  document.addEventListener('keydown', onKey);
+  document.body.appendChild(overlay);
+  finMonthModalEl = overlay;
+  renderMonthModalList();
 }
 
 // ── Finanzas charts (drawn with inline SVG / divs, no libraries) ──
@@ -1367,23 +1751,79 @@ function finDateShort(ts) {
   return d.toLocaleDateString('es-UY', { day: '2-digit', month: '2-digit' });
 }
 
-// Area + line chart from a numeric series, scaled into a 100×40 viewBox.
+// Compact value for the Y axis ("34,3k", "1,2M"), so labels fit the narrow gutter.
+function finAxisFmt(v) {
+  if (finHidden) return FIN_MASK;
+  const a = Math.abs(v);
+  if (a >= 1e6) return (v / 1e6).toLocaleString('es-UY', { maximumFractionDigits: 1 }) + 'M';
+  if (a >= 1e3) return (v / 1e3).toLocaleString('es-UY', { maximumFractionDigits: 1 }) + 'k';
+  return v.toLocaleString('es-UY', { maximumFractionDigits: 0 });
+}
+
+// "Nice" rounded number for axis ticks (Heckbert's graph-label algorithm).
+function finNiceNum(range, round) {
+  const exp = Math.floor(Math.log10(range || 1));
+  const f = (range || 1) / Math.pow(10, exp);
+  let nf;
+  if (round) nf = f < 1.5 ? 1 : f < 3 ? 2 : f < 7 ? 5 : 10;
+  else       nf = f <= 1 ? 1 : f <= 2 ? 2 : f <= 5 ? 5 : 10;
+  return nf * Math.pow(10, exp);
+}
+
+// Round a [min,max] data range to a clean axis with ~`count` evenly-spaced ticks
+// on round values (e.g. 0 / 10k / 20k / 30k / 40k). Returns { lo, hi, ticks }
+// with ticks ordered high→low.
+function finNiceAxis(min, max, count = 5) {
+  if (!(max > min)) {                       // flat line or a single value
+    const pad = Math.abs(max) > 0 ? Math.abs(max) * 0.1 : 1;
+    min = max - pad; max = max + pad;
+  }
+  const step = finNiceNum(finNiceNum(max - min, false) / (count - 1), true);
+  const lo = Math.floor(min / step) * step;
+  const hi = Math.ceil(max / step) * step;
+  const ticks = [];
+  for (let v = hi; v >= lo - step / 2; v -= step) ticks.push(Math.round(v));
+  return { lo, hi, ticks };
+}
+
+// Area + line chart from a numeric series, scaled into a 100×40 viewBox, with a
+// left Y axis on round values and matching horizontal reference lines so you can
+// read how much the savings rose.
 function finAreaChart(values) {
   const n = values.length;
   if (n < 2) return '';
   const W = 100, H = 40, padY = 3;
-  const min = Math.min(...values), max = Math.max(...values);
-  const range = max - min || 1;
+  const dMin = Math.min(...values), dMax = Math.max(...values);
+  const { lo, hi, ticks } = finNiceAxis(dMin, dMax);
+  const range = (hi - lo) || 1;
   const x = (i) => (i / (n - 1)) * W;
-  const y = (v) => H - padY - ((v - min) / range) * (H - padY * 2);
+  const y = (v) => H - padY - ((v - lo) / range) * (H - padY * 2);
   const pts = values.map((v, i) => `${x(i).toFixed(2)},${y(v).toFixed(2)}`);
+  const base = y(lo).toFixed(2);
   const line = `M ${pts.join(' L ')}`;
-  const area = `M ${x(0).toFixed(2)},${H} L ${pts.join(' L ')} L ${x(n - 1).toFixed(2)},${H} Z`;
+  const area = `M ${x(0).toFixed(2)},${base} L ${pts.join(' L ')} L ${x(n - 1).toFixed(2)},${base} Z`;
+
+  // Rounded reference levels. The grid lines live in the SVG; the labels are HTML
+  // positioned at the same heights (the SVG stretches with
+  // preserveAspectRatio="none", which would distort <text>, so labels stay outside).
+  const grid = ticks.map((v) => {
+    const yy = y(v).toFixed(2);
+    return `<line class="fin-grid" x1="0" y1="${yy}" x2="${W}" y2="${yy}"/>`;
+  }).join('');
+  const yLabels = ticks.map((v) => {
+    const top = (y(v) / H * 100).toFixed(2);
+    return `<span class="fin-yaxis-lbl" style="top:${top}%">${escapeHtml(finAxisFmt(v))}</span>`;
+  }).join('');
+
   return `
-    <svg class="fin-chart-svg" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">
-      <path class="fin-area-fill" d="${area}"/>
-      <path class="fin-area-line" d="${line}"/>
-    </svg>`;
+    <div class="fin-plot">
+      <div class="fin-yaxis">${yLabels}</div>
+      <svg class="fin-chart-svg" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">
+        ${grid}
+        <path class="fin-area-fill" d="${area}"/>
+        <path class="fin-area-line" d="${line}"/>
+      </svg>
+    </div>`;
 }
 
 // Horizontal bars. items: [{ label, value, text, cls }].
@@ -1405,21 +1845,24 @@ function finBars(items) {
 // Consolidated totals: everything valued in pesos and in dollars using the
 // DolarAPI buy/sell rate (USD→UYU at compra, UYU→USD at venta — liquidation value).
 function paintConvertedTotals() {
-  const set = (id, uyu, usd) => {
+  const set = (id, uyu, usd, showRate) => {
     const el = $(id);
     if (!el) return;
     if (!finUsdRate || !finUsdRate.compra || !finUsdRate.venta) { el.textContent = ''; el.title = ''; return; }
     if (finHidden) { el.textContent = `Total ${FIN_MASK}`; el.title = ''; return; }
     const pesos = uyu + usd * finUsdRate.compra;
     const dolares = usd + uyu / finUsdRate.venta;
-    el.textContent = `Total ≈ $U ${fmtPlain(pesos)} · U$S ${fmtPlain(dolares)}`;
+    const rate = showRate
+      ? ` (dólar $${fmtPlain(finUsdRate.compra)}/$${fmtPlain(finUsdRate.venta)})`
+      : '';
+    el.textContent = `Total ≈ $U ${fmtPlain(pesos)} · U$S ${fmtPlain(dolares)}${rate}`;
     el.title = `USD valuado a compra $${fmtPlain(finUsdRate.compra)} · ` +
                `UYU valuado a venta $${fmtPlain(finUsdRate.venta)}`;
   };
-  set('fin-total-conv',     finTotals.uyu, finTotals.usd);
-  set('fin-sum-conv',       finTotals.uyu, finTotals.usd);
-  set('fin-exp-total-conv', finSvc.uyu,    finSvc.usd);
-  set('fin-sum-svc-conv',   finSvc.uyu,    finSvc.usd);
+  set('fin-total-conv',     finTotals.uyu, finTotals.usd, true);
+  set('fin-sum-conv',       finTotals.uyu, finTotals.usd, true);
+  set('fin-exp-total-conv', finSvc.uyu,    finSvc.usd, true);
+  set('fin-sum-svc-conv',   finSvc.uyu,    finSvc.usd, true);
 }
 
 async function renderFinanzasCharts(accounts, expenses) {
@@ -1440,7 +1883,7 @@ async function renderFinanzasCharts(accounts, expenses) {
           <span class="fin-chart-meta">$U ${finHidden ? FIN_MASK : fmtPlain(last)}</span>
         </div>
         ${finAreaChart(uyuVals)}
-        <div class="fin-chart-foot">
+        <div class="fin-chart-foot fin-foot-axis">
           <span>${finDateShort(history[0].ts)}</span>
           <span>${finDateShort(history[history.length - 1].ts)}</span>
         </div>
@@ -1473,7 +1916,7 @@ async function renderFinanzasCharts(accounts, expenses) {
     return finUsdRate && finUsdRate.compra ? amt * finUsdRate.compra : amt;
   };
   const byKind = { servicio: 0, gasto: 0, suscripcion: 0 };
-  for (const e of expenses) byKind[expKind(e)] += toUyu(e);
+  for (const e of expenses) if (isRecurringGasto(e)) byKind[expKind(e)] += toUyu(e);
   const typeBars = [
     { label: 'Servicios',     value: byKind.servicio,    text: fmtMoney(byKind.servicio, 'UYU'),    cls: 'blue' },
     { label: 'Gastos',        value: byKind.gasto,       text: fmtMoney(byKind.gasto, 'UYU'),       cls: 'amber' },
@@ -1500,6 +1943,10 @@ async function renderFinanzas() {
   }
 
   const accounts = (state && state.accounts) || [];
+
+  // Locked per-month USD rates (closed months keep their frozen balance). Merge
+  // so a rate just recorded this session isn't lost if it hasn't persisted yet.
+  finMonthlyFx = Object.assign({}, (state && state.fxMonthly) || {}, finMonthlyFx);
 
   // Initialize the "hide values" toggle from the saved state, once.
   if (!finHiddenLoaded) { finHidden = !!(state && state.hidden); finHiddenLoaded = true; }
@@ -1538,10 +1985,13 @@ async function renderFinanzas() {
   if (sumUyuEl) sumUyuEl.textContent = finHidden ? FIN_MASK : fmtPlain(totUyu);
   if (sumUsdEl) sumUsdEl.textContent = finHidden ? FIN_MASK : fmtPlain(totUsd);
 
-  // Gastos y servicios: monthly totals per currency + dashboard summary.
+  // "Gastos fijos totales" banners: only recurring expenses (con día de cobro),
+  // i.e. the fixed monthly burden. Eventual gastos and ingresos are excluded —
+  // they belong to the month-by-month balance, not the fixed total.
   const expenses = (state && state.expenses) || [];
+  const fijos = expenses.filter(isRecurringGasto);
   let svcUyu = 0, svcUsd = 0;
-  for (const e of expenses) {
+  for (const e of fijos) {
     if (String(e.currency).toUpperCase() === 'USD') svcUsd += e.amount || 0;
     else svcUyu += e.amount || 0;
   }
@@ -1559,56 +2009,33 @@ async function renderFinanzas() {
   const sumSvcCountEl = $('fin-sum-svc-count');
   if (sumSvcUyuEl) sumSvcUyuEl.textContent = finHidden ? FIN_MASK : fmtPlain(svcUyu);
   if (sumSvcUsdEl) sumSvcUsdEl.textContent = finHidden ? FIN_MASK : fmtPlain(svcUsd);
-  if (sumSvcCountEl) sumSvcCountEl.textContent = expenses.length
-    ? `· ${expenses.length} ${expenses.length === 1 ? 'ítem' : 'ítems'}` : '';
+  if (sumSvcCountEl) sumSvcCountEl.textContent = fijos.length
+    ? `· ${fijos.length} ${fijos.length === 1 ? 'ítem' : 'ítems'}` : '';
   // Finanzas tab "Gastos totales" banner.
   const expTotUyuEl = $('fin-exp-total-uyu');
   const expTotUsdEl = $('fin-exp-total-usd');
   if (expTotUyuEl) expTotUyuEl.textContent = finHidden ? FIN_MASK : fmtPlain(svcUyu);
   if (expTotUsdEl) expTotUsdEl.textContent = finHidden ? FIN_MASK : fmtPlain(svcUsd);
 
-  // Reflect the active sort in the toggle buttons.
-  document.querySelectorAll('.fin-sort-btn').forEach((b) => {
-    b.classList.toggle('active', b.dataset.sort === finExpSort);
-  });
-
   if (finExpensesEl) {
-    const byName = (a, b) => String(a.name).localeCompare(String(b.name), 'es', { sensitivity: 'base' });
-    const KIND_RANK = { gasto: 0, servicio: 1, suscripcion: 2 };
-    finExpSorted = expenses.slice().sort((a, b) => {
-      if (finExpSort === 'day') {
-        // Sort by billing day (ascending); items without a day go last,
-        // ties broken by name.
-        const da = a.billing_day == null ? Infinity : a.billing_day;
-        const dbb = b.billing_day == null ? Infinity : b.billing_day;
-        return da !== dbb ? da - dbb : byName(a, b);
-      }
-      if (finExpSort === 'kind') {
-        // Group by type (gasto, servicio, suscripción), then by name.
-        const ra = KIND_RANK[expKind(a)] ?? 9;
-        const rb = KIND_RANK[expKind(b)] ?? 9;
-        return ra !== rb ? ra - rb : byName(a, b);
-      }
-      return byName(a, b);
-    });
+    // Inline preview: only the 5 most recently entered movements (newest first).
+    // The full month-by-month view lives in the "Balance mensual" modal.
+    finExpSorted = expenses.slice()
+      .sort((a, b) => (b.created_at || 0) - (a.created_at || 0) || (b.id || 0) - (a.id || 0))
+      .slice(0, FIN_EXP_INLINE_LIMIT);
 
     if (!finExpSorted.length) {
-      finExpensesEl.innerHTML = '<div class="fin-exp-empty">Sin gastos ni servicios. Agregá uno arriba.</div>';
+      finExpensesEl.innerHTML = '<div class="fin-exp-empty">Sin movimientos. Agregá un gasto o ingreso arriba.</div>';
     } else {
-      const shown = finExpSorted.slice(0, FIN_EXP_INLINE_LIMIT);
-      const more = finExpSorted.length - shown.length;
-      finExpensesEl.innerHTML = shown.map(expenseItemHtml).join('')
-        + (more > 0
-          ? `<button class="fin-exp-viewall js-exp-viewall">Ver toda la lista (${finExpSorted.length})</button>`
-          : '');
+      finExpensesEl.innerHTML = finExpSorted.map(expenseItemHtml).join('');
       wireExpenseRowActions(finExpensesEl);
-      const viewAll = finExpensesEl.querySelector('.js-exp-viewall');
-      if (viewAll) viewAll.addEventListener('click', openExpenseModal);
     }
-
-    // Keep the "ver todo" modal in sync if it's open.
-    if (finExpModalEl) renderExpenseModalList();
   }
+
+  // Monthly income-vs-expense summary + its open modal, if any.
+  renderMonthly();
+  if (finMonthModalEl) renderMonthModalList();
+  if (finBalancesModalEl) renderBalancesModalList();
 
   finAccountsEl.innerHTML = accounts.map(accountCardHtml).join('');
   adjustWindowSize();
@@ -1666,7 +2093,7 @@ async function renderFinanzas() {
     }
   });
 
-  renderFinanzasCharts(accounts, expenses);
+  await renderFinanzasCharts(accounts, expenses);
 }
 
 // "Limpiar todo" lives in the static total banner, so wire it up once.
@@ -1703,25 +2130,33 @@ async function renderFinanzas() {
   card.addEventListener('click', () => switchTab('finanzas'));
 })();
 
-// Gastos y Servicios sort toggle (Nombre / Fecha).
-(function wireExpenseSort() {
-  document.querySelectorAll('.fin-sort-btn').forEach((b) => {
-    b.addEventListener('click', () => {
-      const next = b.dataset.sort;
-      if (next === finExpSort) return;
-      finExpSort = next;
-      renderFinanzas();
-    });
-  });
-})();
-
-// "Gastos y Servicios" add form (lives in the Finanzas tab, wired once).
+// Movimientos add form: a gasto or an ingreso, dated (lives in the Finanzas tab,
+// wired once).
 (function wireExpenseAdd() {
   const btn = $('fin-exp-add-btn');
   if (!btn) return;
+  const formEl = btn.closest('.fin-exp-add');
   const nameI = $('fin-exp-name'), amtI = $('fin-exp-amount'),
         curI = $('fin-exp-cur'), kindI = $('fin-exp-kind'), dayI = $('fin-exp-day'),
+        detailI = $('fin-exp-detail'), dateI = $('fin-exp-date'),
         statusEl = $('fin-exp-status');
+
+  // Default the date to today, and start on the "Gasto" flow.
+  if (dateI && !dateI.value) dateI.value = tsToDateInput(Date.now());
+  if (formEl) applyFlowFields(formEl, finExpFlow);
+
+  // Keep the name placeholder + (re-)reveal the right fields when toggling flow.
+  const setFlow = (flow) => {
+    finExpFlow = flow;
+    if (formEl) applyFlowFields(formEl, flow);
+    if (nameI) nameI.placeholder = flow === 'ingreso'
+      ? 'Concepto (ej. Sueldo abril, Aguinaldo)'
+      : 'Nombre (ej. Netflix, UTE, Alquiler)';
+  };
+  document.querySelectorAll('#fin-exp-flow .fin-flow-btn').forEach((b) => {
+    b.addEventListener('click', () => setFlow(b.dataset.flow));
+  });
+
   const setStatus = (msg, kind) => {
     if (!statusEl) return;
     statusEl.textContent = msg || '';
@@ -1741,9 +2176,12 @@ async function renderFinanzas() {
         currency: curI.value,
         kind: kindI.value,
         billingDay: dayI.value.trim() || null,
+        flow: finExpFlow,
+        detail: finExpFlow === 'ingreso' ? detailI.value.trim() : null,
+        txDate: dateInputToTs(dateI.value),
       });
       if (r && r.ok) {
-        nameI.value = ''; amtI.value = ''; dayI.value = '';
+        nameI.value = ''; amtI.value = ''; dayI.value = ''; detailI.value = '';
         setStatus('');
         await renderFinanzas();
         nameI.focus();
@@ -1754,7 +2192,7 @@ async function renderFinanzas() {
     finally { btn.disabled = false; }
   };
   btn.addEventListener('click', submit);
-  [nameI, amtI, dayI].forEach((i) => {
+  [nameI, amtI, dayI, detailI].forEach((i) => {
     if (i) i.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
   });
 })();

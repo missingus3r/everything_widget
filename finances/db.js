@@ -34,9 +34,29 @@ const SCHEMA = `
     currency    TEXT    NOT NULL,
     kind        TEXT    NOT NULL DEFAULT 'servicio',
     billing_day INTEGER,
-    created_at  INTEGER NOT NULL
+    created_at  INTEGER NOT NULL,
+    flow        TEXT    NOT NULL DEFAULT 'gasto',
+    detail      TEXT,
+    tx_date     INTEGER
   );
 `;
+
+// Add columns introduced after the first release to pre-existing databases.
+// SQLite's ALTER TABLE only supports ADD COLUMN, which is all we need here.
+function migrate() {
+  const cols = new Set();
+  const stmt = db.prepare('PRAGMA table_info(expenses)');
+  while (stmt.step()) cols.add(stmt.getAsObject().name);
+  stmt.free();
+  if (!cols.has('flow'))   db.run("ALTER TABLE expenses ADD COLUMN flow TEXT NOT NULL DEFAULT 'gasto'");
+  if (!cols.has('detail')) db.run('ALTER TABLE expenses ADD COLUMN detail TEXT');
+  if (!cols.has('tx_date')) {
+    db.run('ALTER TABLE expenses ADD COLUMN tx_date INTEGER');
+    // Backfill the transaction date from the row's creation time so existing
+    // items land in the month they were added.
+    db.run('UPDATE expenses SET tx_date = created_at WHERE tx_date IS NULL');
+  }
+}
 
 async function init() {
   if (db) return;
@@ -48,6 +68,7 @@ async function init() {
     db = new SQL.Database();
   }
   db.run(SCHEMA);
+  migrate();
   save();
 }
 
@@ -82,6 +103,23 @@ function setSetting(key, value) {
   if (!db) throw new Error('db not initialized');
   db.run('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)', [key, String(value)]);
   save();
+}
+
+// Locked monthly USD buy rate, so a closed month's balance stays put even when
+// the live rate moves. Stored as a single JSON setting { "YYYY-MM": rate }.
+function getFxMonthly() {
+  try { return JSON.parse(getSetting('fx_monthly') || '{}') || {}; }
+  catch { return {}; }
+}
+
+// Record the rate for one month, overwriting only that month. Returns the full
+// map. No-op (no disk write) when the value is unchanged.
+function setFxMonth(ym, rate) {
+  const map = getFxMonthly();
+  if (map[ym] === rate) return map;
+  map[ym] = rate;
+  setSetting('fx_monthly', JSON.stringify(map));
+  return map;
 }
 
 // Delete all snapshots for a single account (resets its balance to empty).
@@ -140,13 +178,16 @@ function history(account) {
   return rows;
 }
 
-// ── Gastos y servicios (recurring monthly expenses) ──────────────
-// Each row is one recurring item the user pays every month (a subscription,
-// a utility bill, rent…). billing_day is optional (1–31).
+// ── Movimientos: gastos, servicios e ingresos ────────────────────
+// Each row is one dated movement. `flow` is 'gasto' (money out) or 'ingreso'
+// (money in); `tx_date` is the date it belongs to (used for the month-by-month
+// summary); `detail` is a free-text label for incomes (salario, aguinaldo…).
+// billing_day stays optional (1–31) for recurring expenses.
 function listExpenses() {
   if (!db) throw new Error('db not initialized');
   const stmt = db.prepare(
-    'SELECT id, name, amount, currency, kind, billing_day FROM expenses ORDER BY name COLLATE NOCASE ASC'
+    'SELECT id, name, amount, currency, kind, billing_day, flow, detail, tx_date, created_at ' +
+    'FROM expenses ORDER BY name COLLATE NOCASE ASC'
   );
   const rows = [];
   while (stmt.step()) rows.push(stmt.getAsObject());
@@ -154,20 +195,24 @@ function listExpenses() {
   return rows;
 }
 
-function insertExpense(name, amount, currency, kind, billingDay, createdAt) {
+function insertExpense(name, amount, currency, kind, billingDay, createdAt, flow, detail, txDate) {
   if (!db) throw new Error('db not initialized');
   db.run(
-    'INSERT INTO expenses (name, amount, currency, kind, billing_day, created_at) VALUES (?, ?, ?, ?, ?, ?)',
-    [name, Number(amount), currency, kind, billingDay == null ? null : Number(billingDay), createdAt]
+    'INSERT INTO expenses (name, amount, currency, kind, billing_day, created_at, flow, detail, tx_date) ' +
+    'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    [name, Number(amount), currency, kind, billingDay == null ? null : Number(billingDay), createdAt,
+     flow || 'gasto', detail == null ? null : String(detail), txDate == null ? createdAt : Number(txDate)]
   );
   save();
 }
 
-function updateExpense(id, name, amount, currency, kind, billingDay) {
+function updateExpense(id, name, amount, currency, kind, billingDay, flow, detail, txDate) {
   if (!db) throw new Error('db not initialized');
   db.run(
-    'UPDATE expenses SET name = ?, amount = ?, currency = ?, kind = ?, billing_day = ? WHERE id = ?',
-    [name, Number(amount), currency, kind, billingDay == null ? null : Number(billingDay), Number(id)]
+    'UPDATE expenses SET name = ?, amount = ?, currency = ?, kind = ?, billing_day = ?, ' +
+    'flow = ?, detail = ?, tx_date = ? WHERE id = ?',
+    [name, Number(amount), currency, kind, billingDay == null ? null : Number(billingDay),
+     flow || 'gasto', detail == null ? null : String(detail), txDate == null ? null : Number(txDate), Number(id)]
   );
   save();
 }
@@ -181,5 +226,6 @@ function deleteExpense(id) {
 module.exports = {
   init, insertSnapshot, getAccountState, history,
   clearAccount, clearAll, getSetting, setSetting, DB_PATH,
+  getFxMonthly, setFxMonth,
   listExpenses, insertExpense, updateExpense, deleteExpense,
 };

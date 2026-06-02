@@ -1015,8 +1015,8 @@ html, body {
 .fin-total-delta .fin-delta { margin-left: 0; font-size: 10px; }
 .fin-total-conv {
   margin-top: 2px;
-  font-size: 9.5px; font-weight: 600;
-  color: rgba(255,255,255,0.55);
+  font-size: 11.5px; font-weight: 600;
+  color: rgba(255,255,255,0.62);
   font-variant-numeric: tabular-nums;
   text-align: right; white-space: nowrap;
 }
@@ -1129,7 +1129,7 @@ a.fin-card-name:hover .fin-site-arrow { opacity: 1; }
   color: #fffbeb; text-shadow: 0 1px 6px rgba(251,191,36,0.25);
 }
 
-/* Sort toggle (Nombre / Fecha) in the Gastos y Servicios header */
+/* Sort toggle (Fecha / Nombre / Día / Tipo) inside the per-month modal */
 .fin-exp-sort { display: inline-flex; gap: 3px; -webkit-app-region: no-drag; }
 .fin-sort-btn {
   background: rgba(255,255,255,0.04);
@@ -1173,6 +1173,7 @@ a.fin-card-name:hover .fin-site-arrow { opacity: 1; }
 .fin-exp-del:hover { color: #fca5a5; background: rgba(239,68,68,0.14); }
 .fin-exp-edit:disabled, .fin-exp-del:disabled { opacity: 0.5; cursor: default; }
 
+/* "Ver todos los balances" button below the inline monthly list. */
 .fin-exp-viewall {
   margin-top: 2px;
   background: rgba(255,255,255,0.03);
@@ -1226,6 +1227,134 @@ a.fin-card-name:hover .fin-site-arrow { opacity: 1; }
 .fin-exp-status { font-size: 10.5px; color: #a1a1aa; min-height: 0; line-height: 1.4; }
 .fin-exp-status.error { color: #ef4444; }
 
+/* Flow toggle (Gasto / Ingreso) shared by the add form and the edit modal */
+.fin-flow-toggle { display: inline-flex; gap: 4px; -webkit-app-region: no-drag; align-self: flex-start; }
+.fin-flow-btn {
+  background: rgba(255,255,255,0.04);
+  border: 1px solid rgba(255,255,255,0.08);
+  color: #71717a;
+  font-size: 10.5px; font-weight: 700; letter-spacing: 0.3px;
+  padding: 5px 16px; border-radius: 6px; cursor: pointer;
+  transition: color 0.15s, background 0.15s, border-color 0.15s;
+}
+.fin-flow-btn:hover { color: #d4d4d8; }
+.fin-flow-btn[data-flow="gasto"].active {
+  color: #fecaca; background: rgba(239,68,68,0.16); border-color: rgba(239,68,68,0.4);
+}
+.fin-flow-btn[data-flow="ingreso"].active {
+  color: #bbf7d0; background: rgba(34,197,94,0.16); border-color: rgba(34,197,94,0.4);
+}
+
+/* Native date picker, themed for the dark UI */
+.fin-input[type="date"] { color-scheme: dark; font-variant-numeric: tabular-nums; }
+
+/* Income movements: green accents, detail badge; dated badge for every row */
+.fin-exp-kind-ingreso { color: #86efac; background: rgba(34,197,94,0.16); }
+.fin-exp-ingreso { border-color: rgba(34,197,94,0.22); }
+.fin-exp-ingreso .fin-exp-amt { color: #86efac; }
+.fin-exp-detail-badge {
+  font-size: 9.5px; color: #bbf7d0; background: rgba(34,197,94,0.12);
+  padding: 1px 6px; border-radius: 4px; flex-shrink: 0;
+  max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.fin-exp-date-badge {
+  font-size: 9.5px; color: #8a8a93; background: rgba(255,255,255,0.04);
+  padding: 1px 6px; border-radius: 4px; flex-shrink: 0; font-variant-numeric: tabular-nums;
+}
+
+/* ── Balance mensual ─────────────────────────────────────────── */
+.fin-month-legend { display: inline-flex; gap: 10px; align-items: center; }
+.fin-month-legend-in, .fin-month-legend-out {
+  font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.4px;
+  display: inline-flex; align-items: center; gap: 4px;
+}
+.fin-month-legend-in { color: #86efac; }
+.fin-month-legend-out { color: #fca5a5; }
+.fin-month-legend-in::before, .fin-month-legend-out::before {
+  content: ''; width: 7px; height: 7px; border-radius: 2px;
+}
+.fin-month-legend-in::before { background: #4ade80; }
+.fin-month-legend-out::before { background: #f87171; }
+
+.fin-monthly { display: flex; flex-direction: column; gap: 6px; }
+.fin-month-row {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px;
+  width: 100%; text-align: left;
+  background: rgba(255,255,255,0.025);
+  border: 1px solid rgba(255,255,255,0.07);
+  border-radius: 8px; padding: 8px 10px; cursor: pointer;
+  -webkit-app-region: no-drag;
+  transition: background 0.15s, border-color 0.15s;
+}
+.fin-month-row:hover { background: rgba(96,165,250,0.10); border-color: rgba(96,165,250,0.28); }
+.fin-month-name {
+  flex: 1 1 auto; min-width: 0;
+  font-size: 12px; font-weight: 700; color: #e4e4e7;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.fin-month-net {
+  flex: 0 0 auto; font-size: 12.5px; font-weight: 800;
+  font-variant-numeric: tabular-nums; text-align: right;
+}
+.fin-month-net.pos { color: #4ade80; }
+.fin-month-net.neg { color: #f87171; }
+.fin-month-net.zero { color: #71717a; }
+.fin-month-chevron { flex: 0 0 auto; color: #52525b; font-size: 16px; line-height: 1; }
+.fin-month-figs {
+  flex: 1 1 100%; display: flex; gap: 14px;
+  font-size: 11px; font-weight: 600; font-variant-numeric: tabular-nums;
+}
+.fin-month-in  { color: #86efac; }
+.fin-month-out { color: #fca5a5; }
+
+/* Per-month modal: totals strip above the movement list */
+.fin-month-modal-totals {
+  display: flex; gap: 8px; flex-wrap: wrap;
+  padding-bottom: 10px; border-bottom: 1px solid rgba(255,255,255,0.08);
+}
+.fin-month-tot {
+  flex: 1 1 0; min-width: 92px;
+  display: flex; flex-direction: column; gap: 2px;
+  background: rgba(255,255,255,0.025);
+  border: 1px solid rgba(255,255,255,0.07);
+  border-radius: 8px; padding: 7px 10px;
+}
+.fin-month-tot-lbl {
+  font-size: 8.5px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.5px; color: #71717a;
+}
+.fin-month-tot-val { font-size: 13px; font-weight: 800; font-variant-numeric: tabular-nums; color: #e4e4e7; }
+.fin-month-tot.in  .fin-month-tot-val { color: #86efac; }
+.fin-month-tot.out .fin-month-tot-val { color: #fca5a5; }
+.fin-month-tot.net.pos .fin-month-tot-val { color: #4ade80; }
+.fin-month-tot.net.neg .fin-month-tot-val { color: #f87171; }
+.fin-month-tot.net.zero .fin-month-tot-val { color: #71717a; }
+
+/* Per-month modal: carousel header "‹ Mayo 2026 ›" */
+.fin-month-modal-head { position: relative; }
+.fin-month-nav {
+  flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 14px;
+}
+.fin-month-nav-btn {
+  -webkit-app-region: no-drag;
+  background: rgba(255,255,255,0.05);
+  border: 1px solid rgba(255,255,255,0.1);
+  color: #c4b5fd;
+  width: 28px; height: 28px; border-radius: 7px; cursor: pointer;
+  font-size: 17px; line-height: 1;
+  display: inline-flex; align-items: center; justify-content: center;
+  transition: color 0.15s, background 0.15s, border-color 0.15s;
+}
+.fin-month-nav-btn:hover {
+  color: #e9d5ff; background: rgba(167,139,250,0.18); border-color: rgba(167,139,250,0.4);
+}
+.fin-month-nav-btn:disabled { opacity: 0.3; cursor: default; }
+.fin-month-nav-label {
+  font-size: 13.5px; font-weight: 800; color: #e4e4e7;
+  min-width: 140px; text-align: center; white-space: nowrap;
+}
+.fin-month-modal-sub { font-size: 10px; color: #71717a; margin-top: -4px; min-height: 12px; }
+.fin-month-modal-sort { display: flex; justify-content: center; gap: 4px; margin: 2px 0 4px; }
+
 /* ── Finanzas: gráficas ─────────────────────────────────────── */
 .fin-charts {
   display: grid;
@@ -1252,10 +1381,24 @@ a.fin-card-name:hover .fin-site-arrow { opacity: 1; }
 .fin-chart-svg { width: 100%; height: 70px; display: block; }
 .fin-area-fill { fill: rgba(74,222,128,0.14); stroke: none; }
 .fin-area-line { fill: none; stroke: #4ade80; stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+.fin-grid { stroke: rgba(255,255,255,0.07); stroke-width: 1; vector-effect: non-scaling-stroke; }
+
+/* Time chart with a left value axis. */
+.fin-plot { display: flex; gap: 6px; align-items: stretch; }
+.fin-plot .fin-chart-svg { flex: 1; min-width: 0; width: auto; }
+.fin-yaxis {
+  position: relative; width: 34px; height: 70px; flex-shrink: 0;
+  font-size: 8px; color: #8a8a93; font-variant-numeric: tabular-nums;
+}
+.fin-yaxis-lbl {
+  position: absolute; right: 0; transform: translateY(-50%);
+  line-height: 1; white-space: nowrap;
+}
 .fin-chart-foot {
   display: flex; justify-content: space-between;
   font-size: 9px; color: #71717a; font-variant-numeric: tabular-nums;
 }
+.fin-foot-axis { margin-left: 40px; }  /* aligns dates under the plot area (axis width + gap) */
 
 .fin-bars { display: flex; flex-direction: column; gap: 6px; }
 .fin-bar-row { display: flex; align-items: center; gap: 8px; }

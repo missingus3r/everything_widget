@@ -29,6 +29,7 @@ contextBridge.exposeInMainWorld('api', {
     clearAccount: (id)      => ipcRenderer.invoke('finances:clear-account', id),
     clearAll:     ()        => ipcRenderer.invoke('finances:clear-all'),
     setHidden:    (hidden)  => ipcRenderer.invoke('finances:set-hidden', hidden),
+    recordFx:     (ym, rate)=> ipcRenderer.invoke('finances:record-fx', { ym, rate }),
     listExpenses: ()        => ipcRenderer.invoke('finances:list-expenses'),
     addExpense:   (payload) => ipcRenderer.invoke('finances:add-expense', payload),
     updateExpense:(payload) => ipcRenderer.invoke('finances:update-expense', payload),

@@ -309,6 +309,7 @@ ipcMain.handle('finances:save-manual', (_e, { accountId, uyu, usd }) =>
 ipcMain.handle('finances:clear-account', (_e, accountId) => finances.clearAccount(accountId));
 ipcMain.handle('finances:clear-all', () => finances.clearAll());
 ipcMain.handle('finances:set-hidden', (_e, hidden) => finances.setHidden(hidden));
+ipcMain.handle('finances:record-fx', (_e, { ym, rate }) => finances.recordFx(ym, rate));
 ipcMain.handle('finances:list-expenses', () => finances.listExpenses());
 ipcMain.handle('finances:add-expense', (_e, payload) => finances.addExpense(payload));
 ipcMain.handle('finances:update-expense', (_e, payload) => finances.updateExpense(payload));
