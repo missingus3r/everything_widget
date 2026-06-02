@@ -195,12 +195,14 @@ function listExpenses() {
   return rows;
 }
 
-function insertExpense(name, amount, currency, kind, billingDay, createdAt, flow, detail, txDate) {
+// `id` is assigned by the app (not autoincrement) so the same id identifies the
+// row in both SQLite and Mongo. See finances/index.js#nextExpenseId.
+function insertExpense(id, name, amount, currency, kind, billingDay, createdAt, flow, detail, txDate) {
   if (!db) throw new Error('db not initialized');
   db.run(
-    'INSERT INTO expenses (name, amount, currency, kind, billing_day, created_at, flow, detail, tx_date) ' +
-    'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-    [name, Number(amount), currency, kind, billingDay == null ? null : Number(billingDay), createdAt,
+    'INSERT INTO expenses (id, name, amount, currency, kind, billing_day, created_at, flow, detail, tx_date) ' +
+    'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    [Number(id), name, Number(amount), currency, kind, billingDay == null ? null : Number(billingDay), createdAt,
      flow || 'gasto', detail == null ? null : String(detail), txDate == null ? createdAt : Number(txDate)]
   );
   save();
@@ -223,9 +225,71 @@ function deleteExpense(id) {
   save();
 }
 
+// ── Bulk export / import (used by the Mongo sync layer) ──────────────────────
+
+// Every snapshot across all accounts, oldest first. Shape mirrors the table:
+// { account, ts, uyu, usd }.
+function getAllSnapshots() {
+  if (!db) throw new Error('db not initialized');
+  const stmt = db.prepare('SELECT account, ts, uyu, usd FROM snapshots ORDER BY ts ASC');
+  const rows = [];
+  while (stmt.step()) rows.push(stmt.getAsObject());
+  stmt.free();
+  return rows;
+}
+
+// Every key-value setting. Shape: { key, value }.
+function getAllSettings() {
+  if (!db) throw new Error('db not initialized');
+  const stmt = db.prepare('SELECT key, value FROM settings');
+  const rows = [];
+  while (stmt.step()) rows.push(stmt.getAsObject());
+  stmt.free();
+  return rows;
+}
+
+// Overwrite the entire local data set with the given rows (the authoritative
+// copy pulled from Mongo). Runs in a single transaction + one disk write.
+// Each array element must already be in SQLite row shape:
+//   snapshots: { account, ts, uyu, usd }
+//   settings:  { key, value }
+//   expenses:  { id, name, amount, currency, kind, billing_day, created_at, flow, detail, tx_date }
+function replaceAll({ snapshots = [], settings = [], expenses = [] } = {}) {
+  if (!db) throw new Error('db not initialized');
+  db.run('BEGIN TRANSACTION');
+  try {
+    db.run('DELETE FROM snapshots');
+    db.run('DELETE FROM settings');
+    db.run('DELETE FROM expenses');
+    for (const s of snapshots) {
+      db.run('INSERT INTO snapshots (account, ts, uyu, usd) VALUES (?, ?, ?, ?)',
+        [s.account, Number(s.ts), s.uyu == null ? null : Number(s.uyu), s.usd == null ? null : Number(s.usd)]);
+    }
+    for (const s of settings) {
+      db.run('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)',
+        [s.key, s.value == null ? null : String(s.value)]);
+    }
+    for (const e of expenses) {
+      db.run(
+        'INSERT INTO expenses (id, name, amount, currency, kind, billing_day, created_at, flow, detail, tx_date) ' +
+        'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        [Number(e.id), e.name, Number(e.amount), e.currency, e.kind,
+         e.billing_day == null ? null : Number(e.billing_day), Number(e.created_at),
+         e.flow || 'gasto', e.detail == null ? null : String(e.detail),
+         e.tx_date == null ? Number(e.created_at) : Number(e.tx_date)]);
+    }
+    db.run('COMMIT');
+  } catch (err) {
+    db.run('ROLLBACK');
+    throw err;
+  }
+  save();
+}
+
 module.exports = {
   init, insertSnapshot, getAccountState, history,
   clearAccount, clearAll, getSetting, setSetting, DB_PATH,
   getFxMonthly, setFxMonth,
   listExpenses, insertExpense, updateExpense, deleteExpense,
+  getAllSnapshots, getAllSettings, replaceAll,
 };

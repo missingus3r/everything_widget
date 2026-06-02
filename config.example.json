@@ -5,5 +5,6 @@
     "label": "Montevideo, UY"
   },
   "refreshMinutesAI": 15,
-  "elevenLabsApiKey": ""
+  "elevenLabsApiKey": "",
+  "financesMongoUri": "mongodb+srv://user:pass@cluster.mongodb.net/system_dashboard_widget?retryWrites=true&w=majority"
 }

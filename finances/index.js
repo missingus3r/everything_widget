@@ -5,12 +5,64 @@
 // deltas vs. the previous entry.
 
 const db = require('./db');
+const mongo = require('./mongo');
 const { ACCOUNTS, getAccount } = require('./accounts');
 
-let dbReady = null;
+// Mongo is the primary store; SQLite is a local mirror. On the first access we
+// initialize SQLite, then reconcile with Mongo (push local-only rows up, pull
+// the authoritative copy down). Everything is wrapped so that an unreachable
+// cluster degrades to SQLite-only instead of breaking Finanzas.
+let readyPromise = null;
 function ensureDb() {
-  if (!dbReady) dbReady = db.init();
-  return dbReady;
+  if (!readyPromise) readyPromise = (async () => {
+    await db.init();
+    await syncOnStartup();
+  })();
+  return readyPromise;
+}
+
+// One-shot startup reconciliation between SQLite and Mongo.
+async function syncOnStartup() {
+  if (!mongo.isEnabled()) return;
+  try {
+    // 1) Push local-only rows up. $setOnInsert keeps Mongo authoritative on
+    //    conflicts while preserving the initial SQLite seed and anything created
+    //    while offline. Returns -1 when the cluster can't be reached.
+    const seeded = await mongo.seedUpIfMissing({
+      snapshots: db.getAllSnapshots(),
+      settings: db.getAllSettings(),
+      expenses: db.listExpenses(),
+    });
+    if (seeded < 0) { console.warn('[finances] Mongo unreachable — SQLite-only this session'); return; }
+
+    // 2) Pull the authoritative copy down and overwrite SQLite with it.
+    const remote = await mongo.fetchAll();
+    if (!remote) return;
+    db.replaceAll({
+      snapshots: remote.snapshots.map((s) => ({ account: s.account, ts: s.ts, uyu: s.uyu, usd: s.usd })),
+      settings: remote.settings.map((s) => ({ key: s._id, value: s.value })),
+      expenses: remote.expenses.map((e) => ({
+        id: e._id, name: e.name, amount: e.amount, currency: e.currency, kind: e.kind,
+        billing_day: e.billing_day, created_at: e.created_at, flow: e.flow, detail: e.detail, tx_date: e.tx_date,
+      })),
+    });
+    // Keep id generation ahead of any id already present.
+    for (const e of remote.expenses) if (Number(e._id) > lastExpenseId) lastExpenseId = Number(e._id);
+    console.log(`[finances] synced from Mongo: ${remote.snapshots.length} snapshots, ` +
+      `${remote.expenses.length} expenses, ${remote.settings.length} settings (${seeded} pushed up)`);
+  } catch (e) {
+    console.warn('[finances] startup sync failed, using local SQLite:', e.message);
+  }
+}
+
+// App-assigned expense ids, shared verbatim by SQLite and Mongo. Millisecond
+// timestamps are unique enough for hand entry; the guard prevents same-ms and
+// post-sync collisions.
+let lastExpenseId = 0;
+function nextExpenseId() {
+  const t = Date.now();
+  lastExpenseId = t > lastExpenseId ? t : lastExpenseId + 1;
+  return lastExpenseId;
 }
 
 // Parse a number tolerantly, accepting both plain ("15000.50") and Uruguayan
@@ -69,7 +121,9 @@ async function recordFx(ym, rate) {
   if (!/^\d{4}-\d{2}$/.test(String(ym)) || !isFinite(r) || r <= 0) {
     return { ok: false, error: 'datos de cotización inválidos' };
   }
-  return { ok: true, fxMonthly: db.setFxMonth(ym, r) };
+  const map = db.setFxMonth(ym, r);
+  await mongo.upsertSetting('fx_monthly', JSON.stringify(map));
+  return { ok: true, fxMonthly: map };
 }
 
 // Aggregate savings over time: at each distinct snapshot timestamp, sum the
@@ -110,6 +164,7 @@ async function getHistory() {
 async function setHidden(hidden) {
   await ensureDb();
   db.setSetting('hidden', hidden ? '1' : '0');
+  await mongo.upsertSetting('hidden', hidden ? '1' : '0');
   return { ok: true, hidden: !!hidden };
 }
 
@@ -132,7 +187,9 @@ async function saveManual(accountId, uyu, usd, ts) {
   if (nextUyu == null && nextUsd == null) {
     return { ok: false, error: 'ingresá al menos un monto' };
   }
-  db.insertSnapshot(accountId, nextUyu, nextUsd, ts || Date.now());
+  const usedTs = ts || Date.now();
+  db.insertSnapshot(accountId, nextUyu, nextUsd, usedTs);
+  await mongo.upsertSnapshot({ account: accountId, ts: usedTs, uyu: nextUyu, usd: nextUsd });
   return { ok: true };
 }
 
@@ -141,12 +198,14 @@ async function clearAccount(accountId) {
   if (!acc) return { ok: false, error: 'cuenta inválida' };
   await ensureDb();
   db.clearAccount(accountId);
+  await mongo.deleteSnapshotsByAccount(accountId);
   return { ok: true };
 }
 
 async function clearAll() {
   await ensureDb();
   db.clearAll();
+  await mongo.deleteAllSnapshots();
   return { ok: true };
 }
 
@@ -185,8 +244,14 @@ async function addExpense(payload = {}) {
   await ensureDb();
   const { value, error } = normalizeExpense(payload);
   if (error) return { ok: false, error };
-  db.insertExpense(value.name, value.amount, value.currency, value.kind, value.billingDay,
-    Date.now(), value.flow, value.detail, value.txDate);
+  const id = nextExpenseId();
+  const createdAt = Date.now();
+  db.insertExpense(id, value.name, value.amount, value.currency, value.kind, value.billingDay,
+    createdAt, value.flow, value.detail, value.txDate);
+  await mongo.upsertExpense({
+    id, name: value.name, amount: value.amount, currency: value.currency, kind: value.kind,
+    billing_day: value.billingDay, created_at: createdAt, flow: value.flow, detail: value.detail, tx_date: value.txDate,
+  });
   return { ok: true };
 }
 
@@ -195,8 +260,14 @@ async function updateExpense(payload = {}) {
   if (payload.id == null) return { ok: false, error: 'id inválido' };
   const { value, error } = normalizeExpense(payload);
   if (error) return { ok: false, error };
-  db.updateExpense(payload.id, value.name, value.amount, value.currency, value.kind, value.billingDay,
+  const id = Number(payload.id);
+  db.updateExpense(id, value.name, value.amount, value.currency, value.kind, value.billingDay,
     value.flow, value.detail, value.txDate);
+  // No created_at here on purpose: $set leaves Mongo's existing value untouched.
+  await mongo.upsertExpense({
+    id, name: value.name, amount: value.amount, currency: value.currency, kind: value.kind,
+    billing_day: value.billingDay, flow: value.flow, detail: value.detail, tx_date: value.txDate,
+  });
   return { ok: true };
 }
 
@@ -204,6 +275,7 @@ async function deleteExpense(id) {
   await ensureDb();
   if (id == null) return { ok: false, error: 'id inválido' };
   db.deleteExpense(id);
+  await mongo.deleteExpense(id);
   return { ok: true };
 }
 

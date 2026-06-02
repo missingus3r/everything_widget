@@ -7,6 +7,11 @@ const DEFAULTS = {
   weather: { latitude: -34.9011, longitude: -56.1645, label: 'Montevideo, UY' },
   refreshMinutesAI: 15,
   elevenLabsApiKey: '',
+  // MongoDB Atlas connection string for Finanzas. When set, Mongo is the primary
+  // store and SQLite is kept as a local mirror; leave empty to run SQLite-only.
+  // Kept out of git (config.json is gitignored); can also be set via the
+  // FINANCES_MONGO_URI environment variable.
+  financesMongoUri: '',
   apiKeys: [],
   pricing: {
     claude: {
