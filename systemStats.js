@@ -224,15 +224,50 @@ function osInfo() {
   };
 }
 
+// ── Slow stats cache (PowerShell-backed) ───────────────────────
+// disks/network/temperature/battery each spawn PowerShell, which is slow and
+// occasionally hangs. Computing them inside snapshot() used to gate the cheap,
+// synchronous CPU/RAM/uptime values behind that latency — so a slow or stuck
+// PowerShell call froze the live gauges. We now refresh the slow stats in the
+// background on their own cadence and serve them from a cache, so snapshot()
+// always returns instantly with fresh CPU/RAM.
+let slowCache = {
+  disks: [],
+  net: { downBps: 0, upBps: 0, adapters: [] },
+  temp: {},
+  battery: null,
+};
+let slowRefreshing = false;
+let slowStarted = false;
+
+async function refreshSlow() {
+  if (slowRefreshing) return; // never overlap PowerShell batches
+  slowRefreshing = true;
+  try {
+    const [d, n, t, b] = await Promise.all([disks(), network(), temperature(), battery()]);
+    slowCache = { disks: d, net: n, temp: t, battery: b };
+  } catch {
+    // keep last good cache on transient failure
+  } finally {
+    slowRefreshing = false;
+  }
+}
+
+const SLOW_INTERVAL_MS = 5000;
+
 async function snapshot() {
-  const [d, n, t, b] = await Promise.all([disks(), network(), temperature(), battery()]);
+  if (!slowStarted) {
+    slowStarted = true;
+    refreshSlow();                            // fire-and-forget: never blocks gauges
+    setInterval(refreshSlow, SLOW_INTERVAL_MS).unref?.();
+  }
   return {
     cpu: cpuUsage(),
     mem: memory(),
-    disks: d,
-    net: n,
-    temp: t,
-    battery: b,
+    disks: slowCache.disks,
+    net: slowCache.net,
+    temp: slowCache.temp,
+    battery: slowCache.battery,
     os: osInfo(),
     ts: Date.now(),
   };

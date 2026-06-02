@@ -21,6 +21,51 @@ let latestEleven = null;
 let isQuitting = false;
 const startHidden = process.argv.includes('--hidden');
 
+// ── Window scaling (corner-drag zoom) ──────────────────────────
+// The widget lays out at a fixed CSS width (BASE_WIDTH) and auto-fits its
+// height to the content. Dragging a corner scales the *whole* widget while
+// keeping proportions: we map the window width to a zoom factor and let an
+// enforced aspect ratio carry the height along. The CSS viewport therefore
+// always stays BASE_WIDTH wide × content tall, so nothing reflows or scrolls.
+const BASE_WIDTH = 820;
+const MIN_ZOOM = 0.6;
+const MAX_ZOOM = 2.0;
+let zoom = 1;
+let lastContentHeight = 720; // CSS px (zoom-independent), reported by renderer
+let applyingSize = false;    // re-entrancy guard for setContentSize → 'resize'
+let zoomSaveTimer = null;
+
+const clampZoom = (z) => Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, z || 1));
+
+// Resize the window to the current content height at the current zoom, and
+// pin the aspect ratio so the OS keeps proportions during a manual drag.
+function applyContentSize() {
+  if (!win) return;
+  const w = Math.round(BASE_WIDTH * zoom);
+  const h = Math.max(1, Math.round(lastContentHeight * zoom));
+  applyingSize = true;
+  try {
+    win.setContentSize(w, h);
+    win.setAspectRatio(w / h); // = BASE_WIDTH / lastContentHeight (zoom cancels)
+  } finally {
+    applyingSize = false;
+  }
+}
+
+// User dragged a corner: derive the zoom from the new width and scale content.
+// The aspect ratio (set above) already keeps the height proportional, so the
+// CSS viewport stays BASE_WIDTH × lastContentHeight and the content fits exactly.
+function onWindowResize() {
+  if (applyingSize || !win) return;
+  const [w] = win.getContentSize();
+  const z = clampZoom(w / BASE_WIDTH);
+  if (Math.abs(z - zoom) < 0.005) return;
+  zoom = z;
+  try { win.webContents.setZoomFactor(zoom); } catch {}
+  clearTimeout(zoomSaveTimer);
+  zoomSaveTimer = setTimeout(() => { try { saveConfig({ widgetZoom: zoom }); } catch {} }, 400);
+}
+
 // ── PNG encoder (no deps) ──────────────────────────────────────
 // Builds a 32x32 RGBA PNG with two horizontal bars reflecting Claude
 // session % (top) and weekly % (bottom). Same approach as CC_usage_widget.
@@ -214,17 +259,22 @@ function createTray() {
 // ── Window ─────────────────────────────────────────────────────
 function createWindow() {
   const { width: screenW } = screen.getPrimaryDisplay().workAreaSize;
+  zoom = clampZoom(loadConfig().widgetZoom);
+  const initialW = Math.round(BASE_WIDTH * zoom);
+  const initialH = Math.round(lastContentHeight * zoom);
   win = new BrowserWindow({
-    width: 820,
-    height: 720,
-    x: screenW - 840,
+    width: initialW,
+    height: initialH,
+    x: Math.max(20, screenW - initialW - 20),
     y: 20,
     useContentSize: true,
     show: !startHidden,
     frame: false,
     transparent: true,
     alwaysOnTop: true,
-    resizable: false,
+    resizable: true,
+    minWidth: Math.round(BASE_WIDTH * MIN_ZOOM),
+    maxWidth: Math.round(BASE_WIDTH * MAX_ZOOM),
     skipTaskbar: true,
     hasShadow: true,
     backgroundColor: '#00000000',
@@ -234,8 +284,14 @@ function createWindow() {
       nodeIntegration: false,
     },
   });
+  win.setAspectRatio(initialW / initialH);
   win.loadFile('index.html');
   win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  // setZoomFactor resets on every load, so (re)apply it once the page is ready.
+  win.webContents.on('did-finish-load', () => {
+    try { win.webContents.setZoomFactor(zoom); } catch {}
+  });
+  win.on('resize', onWindowResize);
   win.on('close', (e) => {
     if (!isQuitting) { e.preventDefault(); win.hide(); }
   });
@@ -350,10 +406,11 @@ ipcMain.on('window-minimize', () => { if (win) win.hide(); });
 ipcMain.on('window-close',    () => { if (win) win.hide(); });
 ipcMain.on('resize-content', (_e, height) => {
   if (!win) return;
-  // Grow the window to fit the full content height (no internal scroll).
-  const h = Math.max(320, Math.min(4000, Math.round(Number(height) || 0)));
-  const [w] = win.getContentSize();
-  win.setContentSize(w, h);
+  // Content reported its natural CSS height (zoom-independent). Store it and
+  // re-fit the window at the current zoom — keeps the no-scroll, auto-height
+  // behavior intact while honoring the corner-drag zoom factor.
+  lastContentHeight = Math.max(320, Math.min(4000, Math.round(Number(height) || 0)));
+  applyContentSize();
 });
 
 // ── Lifecycle ──────────────────────────────────────────────────

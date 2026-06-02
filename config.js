@@ -12,6 +12,8 @@ const DEFAULTS = {
   // Kept out of git (config.json is gitignored); can also be set via the
   // FINANCES_MONGO_URI environment variable.
   financesMongoUri: '',
+  // Zoom factor for the widget window (corner-drag scaling). 1 = 100%.
+  widgetZoom: 1,
   apiKeys: [],
   pricing: {
     claude: {
