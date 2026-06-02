@@ -92,6 +92,16 @@ async function connect() {
 
 function snapshotId(account, ts) { return `${account}_${ts}`; }
 
+// Live connectivity check: connects (or reuses the cached connection) and pings
+// the server. Returns false when Mongo is disabled or the cluster is unreachable.
+async function isConnected() {
+  if (!isEnabled()) return false;
+  const dbh = await connect();
+  if (!dbh) return false;
+  try { await dbh.command({ ping: 1 }); return true; }
+  catch { return false; }
+}
+
 // ── Mutations (best-effort; resolve to false when Mongo is unavailable) ──────
 
 async function upsertSnapshot({ account, ts, uyu, usd }) {
@@ -203,7 +213,7 @@ async function close() {
 }
 
 module.exports = {
-  isEnabled, connect,
+  isEnabled, isConnected, connect,
   upsertSnapshot, upsertSetting, upsertExpense,
   deleteExpense, deleteSnapshotsByAccount, deleteAllSnapshots,
   fetchAll, seedUpIfMissing, close,

@@ -375,6 +375,21 @@
           </span>
         </label>
         <div class="setting-status" id="setting-status"></div>
+
+        <div class="setting-block">
+          <div class="setting-text">
+            <span class="setting-label">Base de datos · Finanzas</span>
+            <span class="setting-desc">MongoDB es la base primaria; SQLite es el espejo local. Sincronizar baja los datos de Mongo a SQLite.</span>
+          </div>
+          <div class="db-row">
+            <span class="db-status" id="mongo-status">
+              <span class="db-dot"></span>
+              <span id="mongo-status-text">Verificando…</span>
+            </span>
+            <button class="db-sync-btn" id="btn-sync-db" type="button">Sincronizar bases</button>
+          </div>
+          <div class="setting-status" id="sync-status"></div>
+        </div>
       </div>
     </div>
 

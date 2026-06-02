@@ -2221,7 +2221,66 @@ async function loadSettings() {
   } catch {
     autoLaunchCheckbox.checked = false;
   }
+  loadMongoStatus();
 }
+
+// ── Finanzas DB: Mongo connection indicator + manual sync ──────
+const mongoStatusEl = $('mongo-status');
+const mongoStatusText = $('mongo-status-text');
+const syncDbBtn = $('btn-sync-db');
+const syncStatus = $('sync-status');
+
+function setMongoStatus(kind, text) {
+  if (!mongoStatusEl) return;
+  mongoStatusEl.className = 'db-status' + (kind ? ` ${kind}` : '');
+  mongoStatusText.textContent = text;
+}
+
+function setSyncStatus(msg, kind) {
+  if (!syncStatus) return;
+  syncStatus.textContent = msg || '';
+  syncStatus.className = 'setting-status' + (kind ? ` ${kind}` : '');
+  if (msg && kind === 'success') {
+    setTimeout(() => {
+      if (syncStatus.textContent === msg) { syncStatus.textContent = ''; syncStatus.className = 'setting-status'; }
+    }, 4000);
+  }
+}
+
+async function loadMongoStatus() {
+  setMongoStatus('checking', 'Verificando…');
+  try {
+    const st = await window.api.finances.mongoStatus();
+    if (!st || !st.enabled) setMongoStatus('disconnected', 'No configurado');
+    else if (st.connected) setMongoStatus('connected', 'Conectado a MongoDB');
+    else setMongoStatus('disconnected', 'Sin conexión (modo local)');
+  } catch {
+    setMongoStatus('disconnected', 'Sin conexión (modo local)');
+  }
+}
+
+if (syncDbBtn) syncDbBtn.addEventListener('click', async () => {
+  syncDbBtn.disabled = true;
+  setSyncStatus('Sincronizando…', null);
+  setMongoStatus('checking', 'Sincronizando…');
+  try {
+    const r = await window.api.finances.syncDb();
+    if (r && r.ok) {
+      setMongoStatus('connected', 'Conectado a MongoDB');
+      setSyncStatus(`Sincronizado: ${r.expenses} mov., ${r.snapshots} saldos` +
+        (r.pushed ? ` (${r.pushed} subidos)` : ''), 'success');
+      renderFinanzas(); // refresh the Finanzas view with the freshly pulled data
+    } else {
+      setMongoStatus('disconnected', 'Sin conexión (modo local)');
+      setSyncStatus((r && r.error) || 'No se pudo sincronizar', 'error');
+    }
+  } catch (e) {
+    setMongoStatus('disconnected', 'Sin conexión (modo local)');
+    setSyncStatus('No se pudo sincronizar', 'error');
+  } finally {
+    syncDbBtn.disabled = false;
+  }
+});
 
 autoLaunchCheckbox.addEventListener('change', async () => {
   const desired = autoLaunchCheckbox.checked;

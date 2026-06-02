@@ -21,38 +21,65 @@ function ensureDb() {
   return readyPromise;
 }
 
-// One-shot startup reconciliation between SQLite and Mongo.
+// Core reconciliation between SQLite and Mongo: push local-only rows up
+// ($setOnInsert keeps Mongo authoritative while preserving the initial seed and
+// anything created offline), then pull the authoritative copy down and overwrite
+// SQLite. Returns a status object; never throws on a Mongo problem.
+async function reconcile() {
+  if (!mongo.isEnabled()) return { ok: false, enabled: false, connected: false, error: 'MongoDB no configurado' };
+  const seeded = await mongo.seedUpIfMissing({
+    snapshots: db.getAllSnapshots(),
+    settings: db.getAllSettings(),
+    expenses: db.listExpenses(),
+  });
+  if (seeded < 0) return { ok: false, enabled: true, connected: false, error: 'No se pudo conectar a MongoDB' };
+
+  const remote = await mongo.fetchAll();
+  if (!remote) return { ok: false, enabled: true, connected: false, error: 'No se pudieron leer los datos de MongoDB' };
+
+  db.replaceAll({
+    snapshots: remote.snapshots.map((s) => ({ account: s.account, ts: s.ts, uyu: s.uyu, usd: s.usd })),
+    settings: remote.settings.map((s) => ({ key: s._id, value: s.value })),
+    expenses: remote.expenses.map((e) => ({
+      id: e._id, name: e.name, amount: e.amount, currency: e.currency, kind: e.kind,
+      billing_day: e.billing_day, created_at: e.created_at, flow: e.flow, detail: e.detail, tx_date: e.tx_date,
+    })),
+  });
+  // Keep id generation ahead of any id already present.
+  for (const e of remote.expenses) if (Number(e._id) > lastExpenseId) lastExpenseId = Number(e._id);
+  return {
+    ok: true, enabled: true, connected: true, pushed: seeded,
+    snapshots: remote.snapshots.length, expenses: remote.expenses.length, settings: remote.settings.length,
+  };
+}
+
+// One-shot startup reconciliation (best-effort; logs and degrades to SQLite-only).
 async function syncOnStartup() {
   if (!mongo.isEnabled()) return;
   try {
-    // 1) Push local-only rows up. $setOnInsert keeps Mongo authoritative on
-    //    conflicts while preserving the initial SQLite seed and anything created
-    //    while offline. Returns -1 when the cluster can't be reached.
-    const seeded = await mongo.seedUpIfMissing({
-      snapshots: db.getAllSnapshots(),
-      settings: db.getAllSettings(),
-      expenses: db.listExpenses(),
-    });
-    if (seeded < 0) { console.warn('[finances] Mongo unreachable — SQLite-only this session'); return; }
-
-    // 2) Pull the authoritative copy down and overwrite SQLite with it.
-    const remote = await mongo.fetchAll();
-    if (!remote) return;
-    db.replaceAll({
-      snapshots: remote.snapshots.map((s) => ({ account: s.account, ts: s.ts, uyu: s.uyu, usd: s.usd })),
-      settings: remote.settings.map((s) => ({ key: s._id, value: s.value })),
-      expenses: remote.expenses.map((e) => ({
-        id: e._id, name: e.name, amount: e.amount, currency: e.currency, kind: e.kind,
-        billing_day: e.billing_day, created_at: e.created_at, flow: e.flow, detail: e.detail, tx_date: e.tx_date,
-      })),
-    });
-    // Keep id generation ahead of any id already present.
-    for (const e of remote.expenses) if (Number(e._id) > lastExpenseId) lastExpenseId = Number(e._id);
-    console.log(`[finances] synced from Mongo: ${remote.snapshots.length} snapshots, ` +
-      `${remote.expenses.length} expenses, ${remote.settings.length} settings (${seeded} pushed up)`);
+    const r = await reconcile();
+    if (r.ok) {
+      console.log(`[finances] synced from Mongo: ${r.snapshots} snapshots, ${r.expenses} expenses, ` +
+        `${r.settings} settings (${r.pushed} pushed up)`);
+    } else {
+      console.warn('[finances] startup sync:', r.error);
+    }
   } catch (e) {
     console.warn('[finances] startup sync failed, using local SQLite:', e.message);
   }
+}
+
+// Manual "Sincronizar bases" action from Settings. Same reconcile, but the
+// result is surfaced to the UI.
+async function syncNow() {
+  await ensureDb();
+  try { return await reconcile(); }
+  catch (e) { return { ok: false, enabled: mongo.isEnabled(), connected: false, error: e.message }; }
+}
+
+// Connectivity probe for the Settings indicator.
+async function getMongoStatus() {
+  return { enabled: mongo.isEnabled(), connected: await mongo.isConnected() };
 }
 
 // App-assigned expense ids, shared verbatim by SQLite and Mongo. Millisecond
@@ -282,4 +309,5 @@ async function deleteExpense(id) {
 module.exports = {
   getState, getHistory, saveManual, clearAccount, clearAll, setHidden, recordFx,
   listExpenses, addExpense, updateExpense, deleteExpense,
+  getMongoStatus, syncNow,
 };
