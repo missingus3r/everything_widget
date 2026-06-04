@@ -36,7 +36,17 @@ const firedResets = new Set();
 const $ = (id) => document.getElementById(id);
 
 document.getElementById('btn-min').addEventListener('click', () => window.api.minimize());
+document.getElementById('btn-max').addEventListener('click', () => window.api.maximize());
 document.getElementById('btn-close').addEventListener('click', () => window.api.close());
+
+// Toggle full-monitor mode: enables vertical scroll + square corners and flips
+// the button affordance. Driven by the main process so the state always matches
+// the actual window geometry.
+if (window.api.onWindowMaximized) window.api.onWindowMaximized((isMax) => {
+  document.body.classList.toggle('maximized', isMax);
+  const b = document.getElementById('btn-max');
+  if (b) b.title = isMax ? 'Restaurar' : 'Maximizar / ajustar al monitor';
+});
 
 // ── Tabs ───────────────────────────────────────────────────────
 const tabButtons = document.querySelectorAll('.tab');

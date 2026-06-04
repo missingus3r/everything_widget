@@ -19,6 +19,16 @@ html, body {
   min-height: 100vh;
 }
 
+/* Full-monitor (maximized) mode: the window covers the whole screen and the
+   820px layout widens to fill it. Content can exceed the viewport height, so
+   allow vertical scroll and square off the corners for an edge-to-edge look. */
+body.maximized { height: 100vh; overflow-y: auto; overflow-x: hidden; }
+body.maximized .widget { border-radius: 0; border: none; }
+body.maximized::-webkit-scrollbar { width: 10px; }
+body.maximized::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.16); border-radius: 5px; }
+body.maximized::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.28); }
+body.maximized::-webkit-scrollbar-track { background: transparent; }
+
 /* ── Title bar ────────────────────────────────── */
 .titlebar {
   display: flex;
@@ -42,6 +52,8 @@ html, body {
 }
 .btn-min { background: rgba(250,204,21,0.2); color: #facc15; }
 .btn-min:hover { background: rgba(250,204,21,0.5); }
+.btn-max { background: rgba(74,222,128,0.2); color: #4ade80; font-size: 11px; }
+.btn-max:hover { background: rgba(74,222,128,0.5); }
 .btn-close { background: rgba(239,68,68,0.2); color: #ef4444; }
 .btn-close:hover { background: rgba(239,68,68,0.5); }
 

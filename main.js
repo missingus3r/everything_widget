@@ -34,6 +34,7 @@ let zoom = 1;
 let lastContentHeight = 720; // CSS px (zoom-independent), reported by renderer
 let applyingSize = false;    // re-entrancy guard for setContentSize → 'resize'
 let zoomSaveTimer = null;
+let preMaximize = null;      // saved {cw, ch, px, py, zoom} while fit-to-monitor is active
 
 const clampZoom = (z) => Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, z || 1));
 
@@ -56,7 +57,7 @@ function applyContentSize() {
 // The aspect ratio (set above) already keeps the height proportional, so the
 // CSS viewport stays BASE_WIDTH × lastContentHeight and the content fits exactly.
 function onWindowResize() {
-  if (applyingSize || !win) return;
+  if (applyingSize || !win || preMaximize) return; // ignore drags while maximized
   const [w] = win.getContentSize();
   const z = clampZoom(w / BASE_WIDTH);
   if (Math.abs(z - zoom) < 0.005) return;
@@ -64,6 +65,47 @@ function onWindowResize() {
   try { win.webContents.setZoomFactor(zoom); } catch {}
   clearTimeout(zoomSaveTimer);
   zoomSaveTimer = setTimeout(() => { try { saveConfig({ widgetZoom: zoom }); } catch {} }, 400);
+}
+
+// "Maximize": make the window cover the whole work area of the current monitor.
+// The widget is taller than the screen and portrait, so preserving its aspect
+// would only shrink it; instead we drop the zoom to 1 and let the 820px layout
+// widen to the full monitor width (the renderer enables vertical scroll while
+// maximized). Toggles back to the previous size + position on a second call.
+function toggleMaximize() {
+  if (!win) return;
+  if (preMaximize) { restoreFromMaximize(); return; }
+  const wa = screen.getDisplayMatching(win.getBounds()).workArea;
+  const [cw, ch] = win.getContentSize();
+  const [px, py] = win.getPosition();
+  preMaximize = { cw, ch, px, py, zoom };
+  zoom = 1;
+  applyingSize = true;
+  try {
+    win.setMaximumSize(wa.width, wa.height); // lift the corner-drag width cap
+    win.setAspectRatio(0);                   // drop the proportion lock
+    win.setContentSize(wa.width, wa.height);
+    win.setPosition(wa.x, wa.y);
+    win.webContents.setZoomFactor(1);
+  } finally { applyingSize = false; }
+  try { win.webContents.send('window-maximized', true); } catch {}
+}
+
+function restoreFromMaximize() {
+  if (!win || !preMaximize) return;
+  const { cw, ch, px, py, zoom: z } = preMaximize;
+  preMaximize = null;
+  zoom = clampZoom(z);
+  applyingSize = true;
+  try {
+    win.setMaximumSize(Math.round(BASE_WIDTH * MAX_ZOOM), 32000); // restore the corner-drag width cap (height effectively unlimited; 0 would clamp height to the minimum)
+    win.setAspectRatio(cw / ch);
+    win.setContentSize(cw, ch);
+    win.setPosition(px, py);
+    win.webContents.setZoomFactor(zoom);
+  } finally { applyingSize = false; }
+  try { win.webContents.send('window-maximized', false); } catch {}
+  applyContentSize();
 }
 
 // ── PNG encoder (no deps) ──────────────────────────────────────
@@ -405,12 +447,16 @@ ipcMain.handle('set-auto-launch', (_event, enabled) => {
 });
 
 ipcMain.on('window-minimize', () => { if (win) win.hide(); });
+ipcMain.on('window-maximize', () => toggleMaximize());
 ipcMain.on('window-close',    () => { if (win) win.hide(); });
 ipcMain.on('resize-content', (_e, height) => {
   if (!win) return;
   // Content reported its natural CSS height (zoom-independent). Store it and
   // re-fit the window at the current zoom — keeps the no-scroll, auto-height
   // behavior intact while honoring the corner-drag zoom factor.
+  // While maximized the widened layout reports a different height; ignore it so
+  // it doesn't clobber the normal-layout height used on restore.
+  if (preMaximize) return;
   lastContentHeight = Math.max(320, Math.min(4000, Math.round(Number(height) || 0)));
   applyContentSize();
 });

@@ -41,6 +41,8 @@ contextBridge.exposeInMainWorld('api', {
   openExternal: (url) => ipcRenderer.invoke('open-external', url),
 
   minimize: () => ipcRenderer.send('window-minimize'),
+  maximize: () => ipcRenderer.send('window-maximize'),
   close: () => ipcRenderer.send('window-close'),
   resizeContent: (height) => ipcRenderer.send('resize-content', height),
+  onWindowMaximized: (cb) => ipcRenderer.on('window-maximized', (_e, isMax) => cb(!!isMax)),
 });
