@@ -38,7 +38,7 @@ function describe(code) {
 
 function getJson(url, timeoutMs = 6000) {
   return new Promise((resolve, reject) => {
-    const req = https.get(url, { headers: { 'User-Agent': 'SystemDashboardWidget/1.0' } }, (res) => {
+    const req = https.get(url, { headers: { 'User-Agent': 'NexusWidget/1.0' } }, (res) => {
       if (res.statusCode && res.statusCode >= 400) {
         res.resume();
         reject(new Error(`HTTP ${res.statusCode}`));

@@ -9,8 +9,9 @@ config.json
 *.sqlite
 finances.sqlite
 
-# Network usage accumulator (per-machine runtime state)
+# Per-machine runtime state
 netUsage.json
+speedtest.json
 
 # Logs / OS
 *.log

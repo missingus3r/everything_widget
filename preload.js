@@ -38,6 +38,13 @@ contextBridge.exposeInMainWorld('api', {
     deleteExpense:(id)      => ipcRenderer.invoke('finances:delete-expense', id),
   },
 
+  yify: {
+    check:       ()       => ipcRenderer.invoke('yify:check'),
+    list:        (params) => ipcRenderer.invoke('yify:list', params),
+    details:     (id)     => ipcRenderer.invoke('yify:details', id),
+    suggestions: (id)     => ipcRenderer.invoke('yify:suggestions', id),
+  },
+
   openExternal: (url) => ipcRenderer.invoke('open-external', url),
 
   minimize: () => ipcRenderer.send('window-minimize'),

@@ -12,6 +12,7 @@ const { runSpeedtest } = require('./speedtest');
 const speedtestHistory = require('./speedtestHistory');
 const { readLocalUsage } = require('./localUsage');
 const finances = require('./finances');
+const { checkYify, fetchYifyMovies, fetchYifyDetails, fetchYifySuggestions } = require('./yify');
 
 let win = null;
 let tray = null;
@@ -240,7 +241,7 @@ function updateTray() {
 
   tray.setImage(nativeImage.createFromBuffer(buildTrayIcon(s ?? null, w ?? null)));
 
-  const tipLines = ['System Dashboard'];
+  const tipLines = ['Nexus'];
   tipLines.push('— Claude —');
   tipLines.push(s != null ? `Session: ${s}%` : 'Session: —');
   tipLines.push(w != null ? `Week (all): ${w}%` : 'Week (all): —');
@@ -290,7 +291,7 @@ function updateTray() {
 
 function createTray() {
   tray = new Tray(nativeImage.createFromBuffer(buildTrayIcon(null, null)));
-  tray.setToolTip('System Dashboard — loading…');
+  tray.setToolTip('Nexus — loading…');
   tray.on('click', () => {
     if (!win) { createWindow(); return; }
     if (win.isVisible()) win.hide(); else showWindow();
@@ -372,6 +373,32 @@ ipcMain.handle('run-speedtest', async (event) => {
   }
 });
 ipcMain.handle('get-speedtest-history', () => speedtestHistory.read());
+
+// ── YIFY torrents ──────────────────────────────────────────────
+// The mirror API can die at any moment: yify:check is the startup health probe
+// (never throws), and yify:list degrades to { error } instead of rejecting.
+ipcMain.handle('yify:check', () => checkYify());
+ipcMain.handle('yify:list', async (_e, params) => {
+  try {
+    return await fetchYifyMovies(params || {});
+  } catch (e) {
+    return { error: String(e && e.message || e) };
+  }
+});
+ipcMain.handle('yify:details', async (_e, movieId) => {
+  try {
+    return await fetchYifyDetails(movieId);
+  } catch (e) {
+    return { error: String(e && e.message || e) };
+  }
+});
+ipcMain.handle('yify:suggestions', async (_e, movieId) => {
+  try {
+    return await fetchYifySuggestions(movieId);
+  } catch (e) {
+    return { error: String(e && e.message || e) };
+  }
+});
 ipcMain.handle('reset-speedtest-history', () => speedtestHistory.reset());
 
 // ── Tray usage push (from renderer) ────────────────────────────
@@ -415,10 +442,11 @@ ipcMain.handle('finances:add-expense', (_e, payload) => finances.addExpense(payl
 ipcMain.handle('finances:update-expense', (_e, payload) => finances.updateExpense(payload));
 ipcMain.handle('finances:delete-expense', (_e, id) => finances.deleteExpense(id));
 
-// Open a URL in the user's default browser (used by the Finanzas account links).
+// Open a URL in the user's default browser (Finanzas links) or the torrent
+// client for magnet: links (YIFY tab).
 ipcMain.handle('open-external', (_e, url) => {
   try {
-    if (typeof url === 'string' && /^https?:\/\//i.test(url)) shell.openExternal(url);
+    if (typeof url === 'string' && /^(https?:\/\/|magnet:\?)/i.test(url)) shell.openExternal(url);
   } catch {}
   return { ok: true };
 });

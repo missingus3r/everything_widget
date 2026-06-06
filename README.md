@@ -1,8 +1,9 @@
-# everything_widget
+# Nexus
 
 Widget de escritorio flotante (Electron) que junta todo en una sola pantalla:
-reloj, clima, uso de CPU/RAM/disco/red, speedtest, consumo de APIs de IA y una
-sección **Finanzas** para seguir saldos, gastos e ingresos.
+reloj, clima, uso de CPU/RAM/disco/red, speedtest, mercado, consumo de APIs de
+IA, una sección **Finanzas** para seguir saldos, gastos e ingresos, y un
+navegador de **torrents YIFY**.
 
 > **Continuación de [CC_usage_widget](https://github.com/missingus3r/CC_usage_widget).**
 > Este proyecto retoma y amplía aquel widget de consumo de Claude Code,
@@ -17,6 +18,9 @@ sección **Finanzas** para seguir saldos, gastos e ingresos.
 - **Uso de IA:** consumo y costo estimado de Claude, Codex, ElevenLabs y otras APIs.
 - **Finanzas:** saldos por cuenta, gastos/servicios/suscripciones e ingresos,
   con gráficas y totales convertidos.
+- **Torrents:** últimas películas y búsqueda en YIFY (con filtros, vistas
+  múltiples, ficha con cast/trailer y links magnet), con health check al inicio
+  por si la API del mirror se cae.
 
 ## Finanzas: almacenamiento
 

@@ -53,6 +53,7 @@ const tabButtons = document.querySelectorAll('.tab');
 const tabPanels = {
   dashboard: document.getElementById('tab-dashboard'),
   finanzas: document.getElementById('tab-finanzas'),
+  torrents: document.getElementById('tab-torrents'),
   keys: document.getElementById('tab-keys'),
   settings: document.getElementById('tab-settings'),
 };
@@ -433,6 +434,442 @@ async function refreshMarkets() {
 
 const mktRefreshBtn = $('mkt-refresh');
 if (mktRefreshBtn) mktRefreshBtn.addEventListener('click', refreshMarkets);
+
+// ── YIFY torrents ──────────────────────────────────────────────
+// La API es un mirror comunitario y puede morir en cualquier momento: al
+// iniciar corre un health check (yify.check). Si falla, el card del dashboard
+// se oculta y el tab muestra "API caída" con un botón de reintento — nunca
+// rompe el resto del widget.
+const YIFY_INTERVAL_MS = 30 * 60 * 1000;   // últimas películas: cada 30 min
+const YIFY_DASH_COUNT = 6;
+// Ítems por página según la vista (la API acepta hasta 50): las tarjetas son
+// grandes (12), los iconos chicos llenan 5 filas de 8 (40), la lista 20 films.
+const YIFY_PAGE_SIZES = { grid: 12, icons: 40, list: 20 };
+function yifyPageSize() { return YIFY_PAGE_SIZES[yifyView] || 12; }
+let yifyOk = null;        // null = verificando; resultado del health check
+let yifyLatest = null;    // último listado "recientes" (alimenta el dashboard)
+let yifyShown = [];       // películas renderizadas en el tab (para los clicks)
+let yifyPage = 1;         // página actual del listado del tab
+let yifyView = 'grid';    // vista del tab: 'grid' (tarjetas) | 'icons' | 'list'
+try { yifyView = localStorage.getItem('yifyView') || 'grid'; } catch {}
+let yifyFetching = false;
+let yifyTimerStarted = false;
+
+function setYifyStatus(kind, text) {
+  const wrap = $('yify-status'), txt = $('yify-status-text');
+  if (!wrap || !txt) return;
+  wrap.className = 'db-status' + (kind ? ` ${kind}` : '');
+  txt.textContent = text;
+}
+
+function yifyMeta(m) {
+  const bits = [];
+  if (m.year) bits.push(String(m.year));
+  if (m.runtime) bits.push(`${m.runtime} min`);
+  if (m.rating) bits.push(`★ ${m.rating}`);
+  return bits.join(' · ');
+}
+
+function renderYifyDash() {
+  const card = $('yify-dash-card'), grid = $('yify-dash');
+  if (!card || !grid) return;
+  const movies = (yifyOk && yifyLatest && Array.isArray(yifyLatest.movies)) ? yifyLatest.movies : [];
+  if (!movies.length) { card.hidden = true; adjustWindowSize(); return; }
+  card.hidden = false;
+  const whenEl = $('yify-dash-when');
+  if (whenEl) whenEl.textContent = yifyLatest.fetchedAt ? fmtWhen(yifyLatest.fetchedAt) : '';
+  grid.innerHTML = movies.slice(0, YIFY_DASH_COUNT).map((m) => `
+    <div class="yify-dash-cell" data-id="${m.id}" title="${escapeHtml(m.title)}${m.year ? ` (${m.year})` : ''} — ver ficha">
+      ${m.cover
+        ? `<img class="yify-poster" src="${escapeHtml(m.cover)}" loading="lazy" alt="">`
+        : `<div class="yify-poster yify-noposter">🎬</div>`}
+      <div class="yify-dash-title">${escapeHtml(m.title)}</div>
+      <div class="yify-dash-meta">${escapeHtml(yifyMeta(m))}</div>
+    </div>`).join('');
+  grid.querySelectorAll('.yify-dash-cell').forEach((c) => {
+    c.addEventListener('click', () => openYifyModal(+c.dataset.id));
+  });
+  adjustWindowSize();
+}
+
+function renderYifyDown(err) {
+  const el = $('yify-list');
+  if (!el) return;
+  el.className = 'yify-grid';
+  const pager = $('yify-pager');
+  if (pager) pager.innerHTML = '';
+  el.innerHTML = `
+    <div class="yify-down">
+      <div class="yify-down-msg">⚠️ La API de YIFY no responde${err ? ` <span class="yify-down-err">(${escapeHtml(err)})</span>` : ''}</div>
+      <button id="yify-retry" class="fin-btn">Reintentar</button>
+    </div>`;
+  const btn = $('yify-retry');
+  if (btn) btn.addEventListener('click', initYify);
+  adjustWindowSize();
+}
+
+// Clicks compartidos por las tres vistas: ficha (js-yify-open) y magnet.
+function attachYifyClickHandlers(el) {
+  el.querySelectorAll('.js-yify-open').forEach((n) => {
+    n.addEventListener('click', () => {
+      const m = yifyShown[+n.dataset.i];
+      if (m) openYifyModal(m.id);
+    });
+  });
+  el.querySelectorAll('.js-yify-magnet').forEach((b) => {
+    b.addEventListener('click', () => {
+      const m = yifyShown[+b.dataset.i];
+      const t = m && m.torrents ? m.torrents[+b.dataset.t] : null;
+      const link = t && (t.magnet || t.url);
+      if (link) window.api.openExternal(link);
+    });
+  });
+}
+
+// Vista "grid": tarjetas con poster grande + badges de calidad (la original).
+function renderYifyCards(el) {
+  el.className = 'yify-grid';
+  el.innerHTML = yifyShown.map((m, i) => `
+    <div class="yify-movie">
+      <div class="yify-poster-wrap js-yify-open" data-i="${i}" title="Ver ficha">
+        ${m.cover
+          ? `<img class="yify-poster" src="${escapeHtml(m.cover)}" loading="lazy" alt="">`
+          : `<div class="yify-poster yify-noposter">🎬</div>`}
+        ${m.rating ? `<span class="yify-rating">★ ${m.rating}</span>` : ''}
+      </div>
+      <div class="yify-info">
+        <div class="yify-title js-yify-open" data-i="${i}" title="${escapeHtml(m.title)}">${escapeHtml(m.title)}</div>
+        <div class="yify-meta">${escapeHtml(yifyMeta(m))}</div>
+        ${m.genres && m.genres.length ? `<div class="yify-genres">${escapeHtml(m.genres.join(' · '))}</div>` : ''}
+        <div class="yify-quals">
+          ${(m.torrents || []).map((t, ti) => `
+            <button class="yify-q js-yify-magnet" data-i="${i}" data-t="${ti}"
+              title="Magnet ${escapeHtml(t.quality)}${t.type ? ` ${escapeHtml(t.type)}` : ''} · ${escapeHtml(t.size)}${t.seeds != null ? ` · ${t.seeds} seeds` : ''}">
+              🧲 ${escapeHtml(t.quality)}
+            </button>`).join('')}
+        </div>
+      </div>
+    </div>`).join('');
+}
+
+// Vista "icons": grilla densa de posters chicos (reusa las celdas del dashboard).
+function renderYifyIcons(el) {
+  el.className = 'yify-icons-grid';
+  el.innerHTML = yifyShown.map((m, i) => `
+    <div class="yify-dash-cell js-yify-open" data-i="${i}"
+      title="${escapeHtml(m.title)}${m.year ? ` (${m.year})` : ''}${m.rating ? ` · ★ ${m.rating}` : ''} — ver ficha">
+      ${m.cover
+        ? `<img class="yify-poster" src="${escapeHtml(m.cover)}" loading="lazy" alt="">`
+        : `<div class="yify-poster yify-noposter">🎬</div>`}
+      <div class="yify-dash-title">${escapeHtml(m.title)}</div>
+      <div class="yify-dash-meta">${escapeHtml(yifyMeta(m))}</div>
+    </div>`).join('');
+}
+
+// Vista "list": una fila por torrent con columnas (año, rating, calidad,
+// tamaño, seeders, leechers, magnet) tipo tracker.
+function renderYifyTable(el) {
+  el.className = 'yify-table';
+  const rows = [];
+  yifyShown.forEach((m, i) => {
+    const ts = (m.torrents && m.torrents.length) ? m.torrents : [null];
+    ts.forEach((t, ti) => {
+      rows.push(`
+        <div class="yify-tr">
+          <span class="yify-td-title js-yify-open" data-i="${i}" title="${escapeHtml(m.title)} — ver ficha">${escapeHtml(m.title)}</span>
+          <span class="yify-td-num">${m.year ?? '—'}</span>
+          <span class="yify-td-num yify-td-rating">${m.rating ? '★ ' + m.rating : '—'}</span>
+          <span class="yify-td-qual">${t ? escapeHtml(t.quality + (t.type ? ' · ' + t.type : '')) : '—'}</span>
+          <span class="yify-td-num">${t && t.size ? escapeHtml(t.size) : '—'}</span>
+          <span class="yify-td-num yify-td-seeds">${t && t.seeds != null ? t.seeds : '—'}</span>
+          <span class="yify-td-num yify-td-peers">${t && t.peers != null ? t.peers : '—'}</span>
+          <span class="yify-td-mag">${t ? `
+            <button class="yify-q yify-q-mini js-yify-magnet" data-i="${i}" data-t="${ti}"
+              title="Magnet ${escapeHtml(t.quality)} · ${escapeHtml(t.size)}">🧲</button>` : ''}</span>
+        </div>`);
+    });
+  });
+  el.innerHTML = `
+    <div class="yify-tr yify-tr-head">
+      <span>Película</span>
+      <span class="yify-td-num">Año</span>
+      <span class="yify-td-num">★</span>
+      <span>Calidad</span>
+      <span class="yify-td-num">Tamaño</span>
+      <span class="yify-td-num" title="Seeders">Seeds</span>
+      <span class="yify-td-num" title="Leechers">Leech</span>
+      <span></span>
+    </div>` + rows.join('');
+}
+
+function renderYifyMovies(movies) {
+  const el = $('yify-list');
+  if (!el) return;
+  yifyShown = Array.isArray(movies) ? movies : [];
+  if (!yifyShown.length) {
+    el.className = 'yify-grid';
+    el.innerHTML = `<div class="ai-loading">Sin resultados</div>`;
+    adjustWindowSize();
+    return;
+  }
+  if (yifyView === 'icons') renderYifyIcons(el);
+  else if (yifyView === 'list') renderYifyTable(el);
+  else renderYifyCards(el);
+  attachYifyClickHandlers(el);
+  adjustWindowSize();
+}
+
+function markYifyDown(err) {
+  yifyOk = false;
+  yifyLatest = null;
+  setYifyStatus('disconnected', 'API caída');
+  renderYifyDash();   // oculta el card del dashboard
+  renderYifyDown(err);
+}
+
+// Bajada de "recientes": alimenta el card del dashboard y, si no hay búsqueda
+// activa, también el listado del tab.
+async function refreshYifyLatest() {
+  if (yifyFetching) return;
+  yifyFetching = true;
+  const btn = $('yify-dash-refresh');
+  if (btn) btn.classList.add('spinning');
+  try {
+    const r = await window.api.yify.list({ limit: yifyPageSize(), sort: 'date_added' });
+    if (r && !r.error) {
+      yifyOk = true;
+      setYifyStatus('connected', 'API conectada');
+      yifyLatest = r;
+      renderYifyDash();
+      // Solo pisar el listado del tab si no hay búsqueda, filtros ni página
+      // avanzada (este fetch es el de "recientes" sin filtrar, página 1).
+      const v = (id) => { const n = $(id); return n ? n.value : ''; };
+      const filtersDefault = yifyPage === 1 && !v('yify-search').trim() && !v('yify-genre') &&
+        !v('yify-quality') && (v('yify-minrating') === '0' || !v('yify-minrating')) &&
+        (v('yify-sort') === 'date_added' || !v('yify-sort'));
+      if (filtersDefault) {
+        renderYifyMovies(r.movies);
+        renderYifyPager(r.count);
+      }
+    } else {
+      markYifyDown(r && r.error);
+    }
+  } catch (e) {
+    markYifyDown(String(e && e.message || e));
+  } finally {
+    if (btn) btn.classList.remove('spinning');
+    yifyFetching = false;
+  }
+}
+
+// Pager "‹ Página X de Y ›" bajo la grilla del tab.
+function renderYifyPager(count) {
+  const el = $('yify-pager');
+  if (!el) return;
+  const totalPages = Math.max(1, Math.ceil((count || 0) / yifyPageSize()));
+  if (!count || totalPages <= 1) { el.innerHTML = ''; adjustWindowSize(); return; }
+  if (yifyPage > totalPages) yifyPage = totalPages;
+  el.innerHTML = `
+    <button class="fin-month-nav-btn js-yify-prev" title="Página anterior" ${yifyPage <= 1 ? 'disabled' : ''}>‹</button>
+    <span class="yify-pager-info">Página ${yifyPage.toLocaleString('es-UY')} de ${totalPages.toLocaleString('es-UY')} · ${count.toLocaleString('es-UY')} películas</span>
+    <button class="fin-month-nav-btn js-yify-next" title="Página siguiente" ${yifyPage >= totalPages ? 'disabled' : ''}>›</button>`;
+  el.querySelector('.js-yify-prev').addEventListener('click', () => {
+    if (yifyPage > 1) { yifyPage--; loadYifyList(); }
+  });
+  el.querySelector('.js-yify-next').addEventListener('click', () => {
+    if (yifyPage < totalPages) { yifyPage++; loadYifyList(); }
+  });
+  adjustWindowSize();
+}
+
+// Búsqueda del tab (texto + género + calidad + rating mínimo + orden) con
+// paginación. yifySearchNew() resetea a la página 1 (filtros nuevos).
+async function loadYifyList() {
+  const el = $('yify-list');
+  const val = (id, def = '') => { const n = $(id); return n ? n.value : def; };
+  if (el) { el.className = 'yify-grid'; el.innerHTML = `<div class="ai-loading">Buscando…</div>`; }
+  try {
+    const r = await window.api.yify.list({
+      limit: yifyPageSize(),
+      page: yifyPage,
+      query: val('yify-search').trim(),
+      sort: val('yify-sort', 'date_added'),
+      genre: val('yify-genre'),
+      quality: val('yify-quality'),
+      minRating: parseInt(val('yify-minrating', '0'), 10) || 0,
+    });
+    if (r && !r.error) {
+      renderYifyMovies(r.movies);
+      renderYifyPager(r.count);
+    } else {
+      renderYifyDown(r && r.error);
+    }
+  } catch (e) {
+    renderYifyDown(String(e && e.message || e));
+  }
+}
+
+function yifySearchNew() { yifyPage = 1; loadYifyList(); }
+
+// ── Ficha de película (modal): movie_details + movie_suggestions ──
+let yifyModalEl = null;
+function closeYifyModal() {
+  if (yifyModalEl) { yifyModalEl.remove(); yifyModalEl = null; }
+  document.removeEventListener('keydown', yifyModalEsc);
+}
+function yifyModalEsc(e) { if (e.key === 'Escape') closeYifyModal(); }
+
+async function openYifyModal(movieId) {
+  closeYifyModal();
+  const overlay = document.createElement('div');
+  overlay.className = 'fin-modal';
+  overlay.innerHTML = `
+    <div class="fin-modal-box yify-modal-box">
+      <div class="ai-loading">Cargando ficha…</div>
+    </div>`;
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) closeYifyModal(); });
+  document.addEventListener('keydown', yifyModalEsc);
+  document.body.appendChild(overlay);
+  yifyModalEl = overlay;
+
+  let det = null, sug = null;
+  try {
+    [det, sug] = await Promise.all([
+      window.api.yify.details(movieId),
+      window.api.yify.suggestions(movieId).catch(() => null),
+    ]);
+  } catch {}
+  if (yifyModalEl !== overlay) return;   // la cerraron mientras cargaba
+
+  const box = overlay.querySelector('.yify-modal-box');
+  if (!det || det.error) {
+    box.innerHTML = `
+      <div class="yify-down-msg">⚠️ No se pudo cargar la ficha${det && det.error ? ` <span class="yify-down-err">(${escapeHtml(det.error)})</span>` : ''}</div>
+      <div class="fin-modal-actions"><button class="fin-btn js-yify-x">Cerrar</button></div>`;
+    box.querySelector('.js-yify-x').addEventListener('click', closeYifyModal);
+    return;
+  }
+
+  const m = det;
+  const sugMovies = (sug && !sug.error && Array.isArray(sug.movies)) ? sug.movies : [];
+  box.innerHTML = `
+    <div class="fin-exp-modal-head">
+      <span class="fin-exp-modal-title">${escapeHtml(m.title)}${m.year ? ` (${m.year})` : ''}</span>
+      <button class="fin-modal-x js-yify-x" title="Cerrar">✕</button>
+    </div>
+    <div class="yify-modal-body">
+      ${m.cover
+        ? `<img class="yify-poster yify-modal-poster" src="${escapeHtml(m.cover)}" alt="">`
+        : `<div class="yify-poster yify-modal-poster yify-noposter">🎬</div>`}
+      <div class="yify-modal-info">
+        <div class="yify-meta">${escapeHtml(yifyMeta(m))}</div>
+        ${m.genres && m.genres.length ? `<div class="yify-genres">${escapeHtml(m.genres.join(' · '))}</div>` : ''}
+        <div class="yify-modal-actions-row">
+          ${m.trailer ? `<button class="fin-btn js-yify-link" data-url="${escapeHtml(m.trailer)}">▶ Trailer</button>` : ''}
+          ${m.url ? `<button class="fin-btn js-yify-link" data-url="${escapeHtml(m.url)}">Ver en YTS ↗</button>` : ''}
+        </div>
+        <div class="yify-quals">
+          ${(m.torrents || []).map((t, ti) => `
+            <button class="yify-q js-yify-modal-magnet" data-t="${ti}"
+              title="Magnet ${escapeHtml(t.quality)}${t.type ? ` ${escapeHtml(t.type)}` : ''} · ${escapeHtml(t.size)}${t.seeds != null ? ` · ${t.seeds} seeds` : ''}">
+              🧲 ${escapeHtml(t.quality)} <span class="yify-q-size">${escapeHtml(t.size)}</span>
+            </button>`).join('')}
+        </div>
+        ${m.cast && m.cast.length ? `
+          <div class="yify-cast-title">Reparto</div>
+          <div class="yify-cast">${m.cast.map((c) =>
+            `<span class="yify-cast-item"><b>${escapeHtml(c.name)}</b>${c.character ? ` — ${escapeHtml(c.character)}` : ''}</span>`
+          ).join('')}</div>` : ''}
+      </div>
+    </div>
+    ${m.synopsis ? `<div class="yify-synopsis">${escapeHtml(m.synopsis)}</div>` : ''}
+    ${sugMovies.length ? `
+      <div class="yify-cast-title">Sugerencias</div>
+      <div class="yify-sug-grid">
+        ${sugMovies.map((s) => `
+          <div class="yify-dash-cell js-yify-sug" data-id="${s.id}" title="${escapeHtml(s.title)}${s.year ? ` (${s.year})` : ''}">
+            ${s.cover
+              ? `<img class="yify-poster" src="${escapeHtml(s.cover)}" loading="lazy" alt="">`
+              : `<div class="yify-poster yify-noposter">🎬</div>`}
+            <div class="yify-dash-title">${escapeHtml(s.title)}</div>
+            <div class="yify-dash-meta">${escapeHtml(yifyMeta(s))}</div>
+          </div>`).join('')}
+      </div>` : ''}`;
+
+  box.querySelector('.js-yify-x').addEventListener('click', closeYifyModal);
+  box.querySelectorAll('.js-yify-link').forEach((b) => {
+    b.addEventListener('click', () => { if (b.dataset.url) window.api.openExternal(b.dataset.url); });
+  });
+  box.querySelectorAll('.js-yify-modal-magnet').forEach((b) => {
+    b.addEventListener('click', () => {
+      const t = (m.torrents || [])[+b.dataset.t];
+      const link = t && (t.magnet || t.url);
+      if (link) window.api.openExternal(link);
+    });
+  });
+  box.querySelectorAll('.js-yify-sug').forEach((c) => {
+    c.addEventListener('click', () => openYifyModal(+c.dataset.id));
+  });
+}
+
+// Health check de arranque. También lo reusa el botón "Reintentar".
+async function initYify() {
+  setYifyStatus('checking', 'Verificando…');
+  const list = $('yify-list');
+  if (list) list.innerHTML = `<div class="ai-loading">Verificando API…</div>`;
+  let st;
+  try { st = await window.api.yify.check(); } catch { st = { ok: false, error: 'error interno' }; }
+  if (!yifyTimerStarted) {
+    yifyTimerStarted = true;
+    setInterval(() => { if (yifyOk) refreshYifyLatest(); }, YIFY_INTERVAL_MS);
+  }
+  if (st && st.ok) {
+    yifyOk = true;
+    setYifyStatus('connected', 'API conectada');
+    refreshYifyLatest();
+  } else {
+    markYifyDown(st && st.error);
+  }
+}
+
+const yifySearchBtn = $('yify-search-btn');
+if (yifySearchBtn) yifySearchBtn.addEventListener('click', yifySearchNew);
+const yifySearchInput = $('yify-search');
+if (yifySearchInput) yifySearchInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') yifySearchNew(); });
+['yify-sort', 'yify-genre', 'yify-quality', 'yify-minrating'].forEach((id) => {
+  const sel = $(id);
+  if (sel) sel.addEventListener('change', yifySearchNew);
+});
+// Toggle de vista (tarjetas / iconos / lista): re-renderiza lo ya cargado
+// sin volver a pegarle a la API. La elección persiste en localStorage.
+function setYifyView(view) {
+  if (view === yifyView) return;
+  const oldSize = yifyPageSize();
+  yifyView = view;
+  try { localStorage.setItem('yifyView', view); } catch {}
+  document.querySelectorAll('#yify-view-toggle .yify-view-btn').forEach((b) => {
+    b.classList.toggle('active', b.dataset.view === view);
+  });
+  const newSize = yifyPageSize();
+  if (newSize === oldSize) {
+    if (yifyShown.length) renderYifyMovies(yifyShown);
+    return;
+  }
+  // El tamaño de página cambió: mantener la posición aproximada en el listado
+  // y recargar con el límite nuevo (los iconos muestran muchos más por página).
+  const firstIdx = (yifyPage - 1) * oldSize;
+  yifyPage = Math.floor(firstIdx / newSize) + 1;
+  if (yifyOk) loadYifyList();
+  else if (yifyShown.length) renderYifyMovies(yifyShown);
+}
+document.querySelectorAll('#yify-view-toggle .yify-view-btn').forEach((b) => {
+  b.classList.toggle('active', b.dataset.view === yifyView);
+  b.addEventListener('click', () => setYifyView(b.dataset.view));
+});
+const yifyRefreshBtn = $('yify-refresh');
+if (yifyRefreshBtn) yifyRefreshBtn.addEventListener('click', () => { yifyOk ? loadYifyList() : initYify(); });
+const yifyDashRefreshBtn = $('yify-dash-refresh');
+if (yifyDashRefreshBtn) yifyDashRefreshBtn.addEventListener('click', refreshYifyLatest);
 
 // ── Speedtest ──────────────────────────────────────────────────
 function fmtMbps(v) {
@@ -2343,6 +2780,8 @@ autoLaunchCheckbox.addEventListener('change', async () => {
 
   loadSpeedtest();
 
+  initYify();   // health check de la API de YIFY + primeras películas
+
   renderFinanzas();
 
   // Tray "Refresh now" → re-fetch everything except speedtest (manual).
@@ -2351,6 +2790,7 @@ autoLaunchCheckbox.addEventListener('change', async () => {
     refreshWeather();
     refreshMarkets();
     refreshAI();
+    yifyOk ? refreshYifyLatest() : initYify();   // si estaba caída, re-chequea
   });
 
   adjustWindowSize();

@@ -35,7 +35,7 @@ function ping() {
         {
           agent: false,
           headers: {
-            'User-Agent': 'SystemDashboardWidget/1.0',
+            'User-Agent': 'NexusWidget/1.0',
             'Connection': 'close',
           },
         },
@@ -68,7 +68,7 @@ function downloadTest(bytes, timeoutMs, skipBytes = 0) {
     const startedAt = process.hrtime.bigint();
     const req = https.get(
       `https://speed.cloudflare.com/__down?bytes=${bytes}`,
-      { agent: false, headers: { 'User-Agent': 'SystemDashboardWidget/1.0' } },
+      { agent: false, headers: { 'User-Agent': 'NexusWidget/1.0' } },
       (res) => {
         if (res.statusCode !== 200) {
           res.resume();
@@ -114,7 +114,7 @@ function uploadTest(bytes, timeoutMs) {
       {
         method: 'POST',
         headers: {
-          'User-Agent': 'SystemDashboardWidget/1.0',
+          'User-Agent': 'NexusWidget/1.0',
           'Content-Type': 'application/octet-stream',
           'Content-Length': body.length * reps,
         },

@@ -1,7 +1,8 @@
 {
-  "name": "system-dashboard-widget",
+  "name": "nexus-widget",
+  "productName": "Nexus",
   "version": "1.0.0",
-  "description": "Floating desktop dashboard: clock, weather, CPU/RAM/disk/net, speedtest, AI usage — all on one screen.",
+  "description": "Nexus — floating desktop dashboard: clock, weather, CPU/RAM/disk/net, speedtest, markets, finances, AI usage and YIFY torrents, all on one screen.",
   "main": "main.js",
   "scripts": {
     "start": "electron ."

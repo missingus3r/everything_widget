@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>System Dashboard</title>
+  <title>Nexus</title>
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -12,7 +12,7 @@
     <div class="titlebar">
       <div class="titlebar-left">
         <span class="titlebar-icon">🖥</span>
-        <span class="titlebar-text">System Dashboard</span>
+        <span class="titlebar-text">Nexus</span>
       </div>
       <div class="titlebar-controls">
         <button class="btn-min" id="btn-min" title="Minimizar">─</button>
@@ -24,6 +24,7 @@
     <div class="tabs">
       <button class="tab active" data-tab="dashboard">Dashboard</button>
       <button class="tab" data-tab="finanzas">Finanzas</button>
+      <button class="tab" data-tab="torrents">Torrents</button>
       <button class="tab" data-tab="keys">API Keys</button>
       <button class="tab" data-tab="settings">Settings</button>
     </div>
@@ -194,6 +195,18 @@
         </div>
       </section>
 
+      <!-- YIFY: últimas películas (oculto si la API está caída) -->
+      <section class="card yify-card" id="yify-dash-card" hidden>
+        <div class="card-head">
+          <span class="card-title">🎬 Últimas películas <span class="mkt-src">· YIFY</span></span>
+          <span class="card-head-right">
+            <span class="card-sub" id="yify-dash-when">—</span>
+            <button id="yify-dash-refresh" class="mini-refresh" title="Actualizar">↻</button>
+          </span>
+        </div>
+        <div id="yify-dash" class="yify-dash-grid"></div>
+      </section>
+
       <!-- Finanzas (resumen) -->
       <section class="card fin-summary-card" id="fin-summary-card" title="Abrir Finanzas">
         <div class="card-head">
@@ -346,6 +359,79 @@
         <div id="fin-monthly" class="fin-monthly">
           <div class="ai-loading">Cargando…</div>
         </div>
+      </section>
+    </div>
+
+    <div class="screen hidden" id="tab-torrents">
+      <section class="card">
+        <div class="card-head">
+          <span class="card-title">🎬 YIFY Torrents</span>
+          <span class="card-head-right">
+            <span class="db-status" id="yify-status">
+              <span class="db-dot"></span>
+              <span id="yify-status-text">Verificando…</span>
+            </span>
+            <button id="yify-refresh" class="mini-refresh" title="Actualizar">↻</button>
+          </span>
+        </div>
+        <div class="yify-search-row">
+          <input id="yify-search" class="fin-input" placeholder="Buscar por título, actor o director… (Enter)" autocomplete="off">
+          <div class="yify-view-toggle" id="yify-view-toggle">
+            <button class="yify-view-btn" data-view="grid" title="Vista tarjetas">▦</button>
+            <button class="yify-view-btn" data-view="icons" title="Vista iconos pequeños">▩</button>
+            <button class="yify-view-btn" data-view="list" title="Vista lista con detalles">☰</button>
+          </div>
+          <button id="yify-search-btn" class="fin-btn">Buscar</button>
+        </div>
+        <div class="yify-search-row yify-filters">
+          <select id="yify-genre" class="fin-select" title="Género">
+            <option value="">Todos los géneros</option>
+            <option value="action">Acción</option>
+            <option value="adventure">Aventura</option>
+            <option value="animation">Animación</option>
+            <option value="biography">Biografía</option>
+            <option value="comedy">Comedia</option>
+            <option value="crime">Crimen</option>
+            <option value="documentary">Documental</option>
+            <option value="drama">Drama</option>
+            <option value="family">Familiar</option>
+            <option value="fantasy">Fantasía</option>
+            <option value="history">Historia</option>
+            <option value="horror">Terror</option>
+            <option value="music">Música</option>
+            <option value="mystery">Misterio</option>
+            <option value="romance">Romance</option>
+            <option value="sci-fi">Sci-Fi</option>
+            <option value="thriller">Thriller</option>
+            <option value="war">Guerra</option>
+            <option value="western">Western</option>
+          </select>
+          <select id="yify-quality" class="fin-select" title="Calidad">
+            <option value="">Toda calidad</option>
+            <option value="720p">720p</option>
+            <option value="1080p">1080p</option>
+            <option value="2160p">2160p (4K)</option>
+            <option value="3D">3D</option>
+          </select>
+          <select id="yify-minrating" class="fin-select" title="Rating mínimo (IMDb)">
+            <option value="0">Rating: todos</option>
+            <option value="5">★ 5+</option>
+            <option value="6">★ 6+</option>
+            <option value="7">★ 7+</option>
+            <option value="8">★ 8+</option>
+          </select>
+          <select id="yify-sort" class="fin-select" title="Ordenar por">
+            <option value="date_added">Recientes</option>
+            <option value="rating">Rating</option>
+            <option value="download_count">Descargas</option>
+            <option value="seeds">Seeds</option>
+            <option value="year">Año</option>
+          </select>
+        </div>
+        <div id="yify-list" class="yify-grid">
+          <div class="ai-loading">Verificando API…</div>
+        </div>
+        <div id="yify-pager" class="yify-pager"></div>
       </section>
     </div>
 
