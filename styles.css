@@ -21,13 +21,30 @@ html, body {
 
 /* Full-monitor (maximized) mode: the window covers the whole screen and the
    820px layout widens to fill it. Content can exceed the viewport height, so
-   allow vertical scroll and square off the corners for an edge-to-edge look. */
-body.maximized { height: 100vh; overflow-y: auto; overflow-x: hidden; }
-body.maximized .widget { border-radius: 0; border: none; }
-body.maximized::-webkit-scrollbar { width: 10px; }
-body.maximized::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.16); border-radius: 5px; }
-body.maximized::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.28); }
-body.maximized::-webkit-scrollbar-track { background: transparent; }
+   el scroll vive en .widget (no en body) para que el top fijo (sticky) quede
+   anclado al borde superior y no se desplace con el contenido. */
+body.maximized { height: 100vh; overflow: hidden; }
+body.maximized .widget {
+  border-radius: 0; border: none;
+  height: 100vh; overflow-y: auto; overflow-x: hidden;
+}
+body.maximized .widget::-webkit-scrollbar { width: 10px; }
+body.maximized .widget::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.16); border-radius: 5px; }
+body.maximized .widget::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.28); }
+body.maximized .widget::-webkit-scrollbar-track { background: transparent; }
+
+/* Top fijo: controles de ventana + menú de tabs. Sticky al borde superior del
+   scroller (.widget); en modo normal no hay scroll, así que queda igual arriba. */
+.widget-top {
+  position: sticky; top: 0; z-index: 30;
+  background: rgba(20, 22, 30, 0.98);
+}
+/* Reloj + fecha (solo dashboard) también fijos, justo debajo del menú. */
+#tab-dashboard .clock-section {
+  position: sticky; top: var(--topbar-h, 72px); z-index: 20;
+  background: rgba(20, 22, 30, 0.98);
+  margin: 0 -14px; padding-left: 14px; padding-right: 14px;
+}
 
 /* ── Title bar ────────────────────────────────── */
 .titlebar {
@@ -926,6 +943,42 @@ body.maximized::-webkit-scrollbar-track { background: transparent; }
 .db-status.disconnected .db-dot { background: #ef4444; box-shadow: 0 0 6px 0 rgba(239,68,68,0.5); }
 .db-status.checking .db-dot { background: #fbbf24; animation: db-pulse 1s ease-in-out infinite; }
 @keyframes db-pulse { 0%,100% { opacity: 0.35; } 50% { opacity: 1; } }
+/* Settings: lista de APIs del sistema con verificador por fila. */
+.apis-list { display: flex; flex-direction: column; gap: 4px; }
+.api-row {
+  display: flex; align-items: center; gap: 10px;
+  background: rgba(255,255,255,0.025);
+  border: 1px solid rgba(255,255,255,0.06);
+  border-radius: 8px;
+  padding: 6px 10px;
+  cursor: pointer;
+  transition: border-color 0.15s;
+}
+.api-row:hover { border-color: rgba(96,165,250,0.35); }
+.api-name {
+  flex: 1; min-width: 0;
+  font-size: 12.5px; font-weight: 600; color: #e4e4e7;
+  overflow: hidden;
+}
+.api-name-line {
+  display: block;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.api-link {
+  display: block;
+  font-size: 10.5px; font-weight: 400; color: rgba(96,165,250,0.6);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  cursor: pointer; text-decoration: none;
+}
+.api-link:hover { color: #60a5fa; text-decoration: underline; }
+.api-endpoints {
+  display: block;
+  font-size: 10px; font-weight: 400; color: #71717a;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.api-ms { font-size: 11px; color: #71717a; font-variant-numeric: tabular-nums; }
+.api-row .db-status { font-size: 12px; }
+
 .db-sync-btn {
   font-size: 13.5px; font-weight: 600; color: #e4e4e7;
   padding: 6px 12px;
@@ -967,60 +1020,61 @@ body.maximized::-webkit-scrollbar-track { background: transparent; }
   border-top: 1px solid rgba(255,255,255,0.06);
 }
 
-/* ── Mercado: cripto + divisas ──────────────────────────────── */
-.mkt-content { display: flex; flex-direction: column; }
-.mkt-cols {
+/* ── Mercado: cripto · divisas · acciones en 3 columnas ─────── */
+/* #mkt-content (cripto+divisas) y #stocks-block (acciones) usan display:contents
+   para que sus columnas internas caigan en la misma grilla de 3. */
+.mkt-grid3 {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px; align-items: start;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr) minmax(0, 1fr);
+  column-gap: 14px; align-items: start;
 }
-.mkt-col { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
-.mkt-cols .mkt-col:not(:first-child) {
-  border-left: 1px solid rgba(255,255,255,0.06);
-  padding-left: 12px;
-}
+.mkt-grid3 > #mkt-content, .mkt-grid3 > #stocks-block { display: contents; }
+.mkt-content { display: flex; flex-direction: column; }
+.mkt-grid3 .ai-loading { grid-column: 1 / -1; }
+.mkt-col { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.mkt-col-sep { border-left: 1px solid rgba(255,255,255,0.06); padding-left: 14px; }
 .mkt-sub-title {
-  font-size: 12px; font-weight: 700; color: #c4b5fd;
-  text-transform: uppercase; letter-spacing: 0.6px;
-  padding-bottom: 4px; border-bottom: 1px solid rgba(255,255,255,0.05);
+  font-size: 11px; font-weight: 700; color: #c4b5fd;
+  text-transform: uppercase; letter-spacing: 0.5px;
+  padding-bottom: 3px; border-bottom: 1px solid rgba(255,255,255,0.05);
 }
 .mkt-src { color: #71717a; font-weight: 500; letter-spacing: 0; }
-.mkt-empty { font-size: 13px; color: #71717a; padding: 6px 0; }
+.mkt-empty { font-size: 12px; color: #71717a; padding: 5px 0; }
 
 .mkt-coin {
-  display: flex; align-items: baseline; gap: 8px;
+  display: flex; align-items: baseline; gap: 6px;
   font-variant-numeric: tabular-nums;
 }
-.mkt-coin-sym { font-size: 13px; font-weight: 800; color: #fbbf24; width: 40px; flex-shrink: 0; }
+.mkt-coin-sym { font-size: 12px; font-weight: 800; color: #fbbf24; width: 38px; flex-shrink: 0; }
 .mkt-coin-name {
-  font-size: 13px; color: #a1a1aa; min-width: 0;
+  font-size: 12px; color: #a1a1aa; min-width: 0;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.mkt-coin-price { margin-left: auto; font-size: 15px; font-weight: 700; color: #e4e4e7; }
-.mkt-chg { font-size: 12px; font-weight: 700; width: 76px; text-align: right; flex-shrink: 0; }
+.mkt-coin-price { margin-left: auto; font-size: 13px; font-weight: 700; color: #e4e4e7; }
+.mkt-chg { font-size: 11px; font-weight: 700; width: 54px; text-align: right; flex-shrink: 0; }
 .mkt-chg.up { color: #4ade80; }
 .mkt-chg.down { color: #ef4444; }
 
 .mkt-fx-row {
   display: grid;
-  grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr) minmax(0, 1fr);
-  gap: 6px; align-items: baseline;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr);
+  gap: 5px; align-items: baseline;
   font-variant-numeric: tabular-nums;
 }
 .mkt-fx-head {
-  font-size: 10.5px; font-weight: 700; color: #71717a;
-  text-transform: uppercase; letter-spacing: 0.4px;
+  font-size: 9.5px; font-weight: 700; color: #71717a;
+  text-transform: uppercase; letter-spacing: 0.3px;
   padding-bottom: 2px;
 }
 .mkt-fx-head .mkt-fx-cell { color: #93c5fd; }
 .mkt-fx-cur {
-  font-size: 12.5px; color: #a1a1aa; min-width: 0;
+  font-size: 11.5px; color: #a1a1aa; min-width: 0;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .mkt-fx-cur b { color: #e4e4e7; font-weight: 700; }
 .mkt-fx-cell { display: flex; flex-direction: column; align-items: flex-end; text-align: right; }
-.mkt-fx-val { font-size: 14px; font-weight: 600; color: #e4e4e7; }
-.mkt-fx-sub { font-size: 10px; color: #71717a; }
+.mkt-fx-val { font-size: 12.5px; font-weight: 600; color: #e4e4e7; }
+.mkt-fx-sub { font-size: 9.5px; color: #71717a; }
 
 /* ── Finanzas ───────────────────────────────────────────────── */
 .fin-total-row { display: flex; align-items: stretch; gap: 8px; }
@@ -1113,9 +1167,7 @@ a.fin-card-name:hover .fin-site-arrow { opacity: 1; }
 .fin-delta.none { color: #71717a; font-weight: 500; font-style: italic; }
 
 .fin-inputs-row { display: flex; gap: 6px; }
-/* Push the actions to the bottom so cards with fewer currency rows (e.g. BROU,
-   UYU-only) keep their Guardar/Limpiar aligned with the multi-currency cards. */
-.fin-actions-row { display: flex; gap: 6px; margin-top: auto; }
+.fin-actions-row { display: flex; gap: 6px; }
 .fin-actions-row .fin-btn { flex: 1; text-align: center; }
 .fin-input {
   flex: 1 1 0; min-width: 0;
@@ -1144,6 +1196,31 @@ a.fin-card-name:hover .fin-site-arrow { opacity: 1; }
 .fin-card-status { font-size: 12.5px; color: #a1a1aa; min-height: 0; line-height: 1.4; }
 .fin-card-status.error { color: #ef4444; }
 .fin-card-status.success { color: #4ade80; }
+
+/* Proyección mensual / descripción de inversiones: bloque separado del ahorro
+   por una línea sutil, para dejar claro que es un proyectado y no parte del saldo.
+   margin-top:auto lo ancla al fondo, alineando el pronóstico entre cards aunque
+   tengan distinta cantidad de monedas (p.ej. BROU, solo UYU). */
+.fin-proj, .fin-desc {
+  display: flex; flex-direction: column; gap: 6px;
+  margin-top: auto;
+  padding-top: 8px;
+  border-top: 1px dashed rgba(255,255,255,0.09);
+}
+.fin-proj-head { display: flex; align-items: baseline; gap: 8px; }
+.fin-proj-label {
+  font-size: 11.5px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.4px; color: #a78bfa;
+}
+.fin-proj-total { margin-left: auto; display: flex; gap: 10px; align-items: baseline; }
+.fin-proj-amt {
+  font-size: 14.5px; font-weight: 700; color: #c4b5fd;
+  font-variant-numeric: tabular-nums;
+}
+.fin-desc-input {
+  flex: 1 1 auto; width: 100%; resize: vertical; min-height: 52px;
+  line-height: 1.45; font-family: inherit;
+}
 
 /* Dashboard summary card (read-only snapshot, links to the Finanzas tab) */
 .fin-summary-card { cursor: pointer; transition: border-color 0.15s, background 0.15s; }
@@ -1454,6 +1531,92 @@ select option { background-color: #1a1a1f; color: #e4e4e7; }
 }
 .fin-foot-axis { margin-left: 40px; }  /* aligns dates under the plot area (axis width + gap) */
 
+/* ── Modal "Ahorros en el tiempo" (gráfico completo) ─────────── */
+.fin-chart-click { cursor: pointer; transition: border-color 0.15s, background 0.15s; }
+.fin-chart-click:hover { border-color: rgba(96,165,250,0.35); background: rgba(96,165,250,0.05); }
+
+.fin-modal .fin-sav-modal-box {
+  width: min(760px, 94vw); max-width: none; max-height: 88vh;
+  padding: 16px; gap: 12px;
+  overflow-y: auto; -webkit-overflow-scrolling: touch;
+}
+
+/* Leyenda: chips toggleables por serie. */
+.fin-sav-legend { display: flex; flex-wrap: wrap; gap: 6px; }
+.fin-sav-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  background: rgba(255,255,255,0.03);
+  border: 1px solid rgba(255,255,255,0.08);
+  color: #e4e4e7; font-size: 11.5px; font-weight: 600;
+  padding: 4px 10px; border-radius: 999px; cursor: pointer;
+  transition: opacity 0.15s, border-color 0.15s;
+}
+.fin-sav-chip:hover { border-color: rgba(255,255,255,0.2); }
+.fin-sav-chip:not(.on) { opacity: 0.45; }
+.fin-sav-chip:not(.on) .fin-sav-dot { background: #52525b !important; }
+.fin-sav-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+
+/* Plot grande: misma estructura eje-Y + svg que el chart chico, más alto.
+   (.fin-sav-area .fin-chart-svg pisa el width:auto de .fin-plot .fin-chart-svg) */
+.fin-sav-yaxis { height: 260px; width: 40px; }
+.fin-sav-area { position: relative; flex: 1; min-width: 0; }
+.fin-sav-area .fin-chart-svg { width: 100%; height: 260px; display: block; }
+.fin-sav-xaxis {
+  position: relative; height: 14px; margin-left: 46px;
+  font-size: 10px; color: #71717a; font-variant-numeric: tabular-nums;
+}
+.fin-sav-xaxis span { position: absolute; transform: translateX(-50%); white-space: nowrap; }
+.fin-sav-xaxis span:first-child { transform: none; }
+.fin-sav-xaxis span:last-child { transform: translateX(-100%); }
+
+/* Crosshair + tooltip de valores. */
+.fin-sav-cross {
+  position: absolute; top: 0; bottom: 0; width: 1px;
+  background: rgba(255,255,255,0.25); pointer-events: none;
+}
+.fin-sav-tip {
+  position: absolute; top: 8px; z-index: 2;
+  background: rgba(17,17,22,0.95);
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 8px; padding: 8px 10px;
+  pointer-events: none; max-width: 260px;
+  display: flex; flex-direction: column; gap: 3px;
+}
+/* display:flex pisa el display:none del UA para [hidden]; restaurarlo. */
+.fin-sav-tip[hidden] { display: none; }
+.fin-sav-tip-date { font-size: 11px; font-weight: 700; color: #c4b5fd; padding-bottom: 2px; }
+.fin-sav-tip-row {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 11.5px; color: #a1a1aa; font-variant-numeric: tabular-nums;
+}
+.fin-sav-tip-lbl {
+  flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  max-width: 130px;
+}
+.fin-sav-tip-row b { color: #e4e4e7; font-weight: 700; white-space: nowrap; }
+
+/* Estadísticas del total bajo el gráfico. */
+.fin-sav-stats {
+  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px;
+}
+.fin-sav-stat {
+  background: rgba(255,255,255,0.025);
+  border: 1px solid rgba(255,255,255,0.07);
+  border-radius: 8px; padding: 7px 10px;
+  display: flex; flex-direction: column; gap: 2px; min-width: 0;
+}
+.fin-sav-stat-l {
+  font-size: 10px; font-weight: 700; color: #71717a;
+  text-transform: uppercase; letter-spacing: 0.4px;
+}
+.fin-sav-stat-v {
+  font-size: 13px; font-weight: 700; color: #e4e4e7;
+  font-variant-numeric: tabular-nums;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.fin-sav-stat-v.pos { color: #4ade80; }
+.fin-sav-stat-v.neg { color: #f87171; }
+
 .fin-bars { display: flex; flex-direction: column; gap: 6px; }
 .fin-bar-row { display: flex; align-items: center; gap: 8px; }
 .fin-bar-label {
@@ -1482,12 +1645,35 @@ select option { background-color: #1a1a1f; color: #e4e4e7; }
 }
 
 /* ── YIFY torrents ──────────────────────────────────────────── */
-/* Dashboard strip: últimas N películas como posters clickeables. */
-.yify-dash-grid {
+/* Dashboard "Últimos estrenos": mitad izq películas (YIFY) + mitad der series
+   (EZTV), posters chicos en grilla de 4 por mitad. */
+.dash-media-split {
   display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
-  gap: 10px;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 14px;
 }
+.dash-media-col { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.dash-media-col-sep { border-left: 1px solid rgba(255,255,255,0.06); padding-left: 14px; }
+.dash-media-label {
+  font-size: 11px; font-weight: 700; color: #c4b5fd;
+  text-transform: uppercase; letter-spacing: 0.5px;
+  padding-bottom: 3px; border-bottom: 1px solid rgba(255,255,255,0.05);
+}
+.dash-media-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+.dash-media-grid .yify-dash-cell { position: relative; }
+.dash-media-grid .yify-dash-title { font-size: 10.5px; }
+.dash-media-grid .yify-dash-meta { font-size: 9.5px; }
+.dash-media-grid .ez-ep-count {
+  position: absolute; top: 4px; right: 4px;
+  font-size: 9.5px; font-weight: 700; color: #93c5fd;
+  background: rgba(0,0,0,0.7); padding: 1px 5px; border-radius: 5px;
+}
+.dash-media-empty { grid-column: 1 / -1; font-size: 12px; color: #71717a; padding: 8px 0; }
+
 .yify-dash-cell {
   display: flex; flex-direction: column; gap: 4px;
   min-width: 0; cursor: pointer;
@@ -1649,6 +1835,108 @@ select option { background-color: #1a1a1f; color: #e4e4e7; }
 .yify-td-mag { text-align: right; }
 .yify-q-mini { padding: 2px 6px; font-size: 12px; }
 
+/* Favoritos: toggle de sección ♥ + corazones de like en las vistas. */
+.yify-favs-btn { color: #71717a; }
+.yify-favs-btn:hover { color: #fca5a5; }
+.yify-favs-btn.active {
+  color: #f87171; background: rgba(248,113,113,0.15); border-color: rgba(248,113,113,0.4);
+}
+.yify-fav-btn {
+  position: absolute; top: 6px; left: 6px;
+  background: rgba(0,0,0,0.6); border: none;
+  color: #d4d4d8; font-size: 14px; line-height: 1;
+  padding: 3px 7px; border-radius: 6px; cursor: pointer;
+  transition: color 0.15s, transform 0.1s;
+  -webkit-app-region: no-drag;
+}
+.yify-fav-btn:hover { color: #fca5a5; transform: scale(1.12); }
+.yify-fav-btn.faved { color: #f87171; }
+.yify-icons-grid .yify-dash-cell { position: relative; }
+/* Variante inline para la vista lista (delante del título). */
+.yify-fav-mini {
+  position: static; display: inline-block;
+  background: none; padding: 0 5px 0 0; font-size: 13px;
+}
+/* Botón de la ficha (modal). */
+.yify-fav-action.faved { color: #f87171; border-color: rgba(248,113,113,0.4); }
+
+/* ── Torrents Series (EZTV) ─────────────────────────────────── */
+/* Chips de series: resultados de la búsqueda por nombre (IMDb). */
+.ez-shows { display: flex; flex-wrap: wrap; gap: 8px; }
+.ez-shows:empty { display: none; }
+.ez-show-chip {
+  display: flex; align-items: center; gap: 8px;
+  background: rgba(255,255,255,0.025);
+  border: 1px solid rgba(255,255,255,0.07);
+  border-radius: 8px; padding: 4px 10px 4px 4px;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+.ez-show-chip:hover { border-color: rgba(96,165,250,0.4); background: rgba(96,165,250,0.08); }
+.ez-show-chip img, .ez-chip-noimg {
+  width: 30px; height: 42px; object-fit: cover; border-radius: 5px;
+  display: flex; align-items: center; justify-content: center;
+}
+.ez-chip-noimg { background: rgba(255,255,255,0.05); font-size: 14px; }
+.ez-chip-title { font-size: 12.5px; font-weight: 600; color: #e4e4e7; }
+.ez-chip-year { font-size: 11.5px; color: #71717a; }
+
+/* Cards de series apiladas por nombre (vista recientes, como Films).
+   Reusa las celdas .yify-dash-cell; el badge marca cuántos episodios cayeron
+   juntos en la página. */
+.ez-cards-grid {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 10px;
+}
+.ez-cards-grid .ai-loading { grid-column: 1 / -1; }
+.ez-card { position: relative; }
+.ez-ep-count {
+  position: absolute; top: 6px; right: 6px;
+  font-size: 11px; font-weight: 700; color: #93c5fd;
+  background: rgba(0,0,0,0.65);
+  padding: 2px 7px; border-radius: 6px;
+}
+
+/* Modal de serie: poster mini en el head + secciones de episodios.
+   La caja tiene alto acotado y NO scrollea como un todo: el head, los títulos
+   y el pager quedan fijos, y cada lista de episodios scrollea por dentro. Así
+   una serie con cientos de capítulos no estira el modal ni la ventana. */
+.fin-modal .ez-modal-box {
+  width: min(720px, 94vw);
+  max-height: 85vh;
+  overflow: hidden;            /* el scroll vive en las listas, no en la caja */
+}
+.fin-modal .ez-modal-box > .fin-exp-modal-head,
+.fin-modal .ez-modal-box > .yify-cast-title,
+.fin-modal .ez-modal-box > #ez-modal-tmdb,
+.fin-modal .ez-modal-box > #ez-modal-more { flex-shrink: 0; }
+.ez-modal-poster {
+  width: 40px; height: 56px; object-fit: cover; border-radius: 6px;
+  border: 1px solid rgba(255,255,255,0.08); flex-shrink: 0;
+}
+.ez-modal-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Listas de episodios scrolleables dentro del modal. */
+.ez-modal-eplist {
+  overflow-y: auto; overflow-x: hidden; min-height: 0;
+  border: 1px solid rgba(255,255,255,0.05);
+  border-radius: 8px; padding: 4px;
+}
+.ez-modal-recent { flex: 0 0 auto; max-height: 30vh; }
+.ez-modal-all { flex: 1 1 auto; min-height: 120px; }   /* absorbe el alto restante */
+.ez-modal-eplist::-webkit-scrollbar { width: 8px; }
+.ez-modal-eplist::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.16); border-radius: 4px; }
+.ez-modal-eplist::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.28); }
+.ez-modal-eplist::-webkit-scrollbar-track { background: transparent; }
+
+/* Tabla: columnas propias (♥, episodio, S·E, calidad, tamaño, seeds, leech,
+   fecha, 🧲). Reusa las celdas .yify-td-*. */
+.ez-tr { grid-template-columns: 24px minmax(0, 1fr) 52px 52px 76px 44px 44px 52px 38px; }
+.ez-td-fav { display: flex; }
+.ez-td-title { cursor: default; }
+.ez-td-title:hover { color: #e4e4e7; }
+
 /* Paginación "‹ Página X de Y ›" bajo la grilla. */
 .yify-pager {
   display: flex; align-items: center; justify-content: center; gap: 12px;
@@ -1704,14 +1992,335 @@ select option { background-color: #1a1a1f; color: #e4e4e7; }
 .spark-col { height: 100%; }
 .spark-track { flex: 1 1 auto; height: auto; min-height: 40px; }
 
-/* Mercado: equal-height columns; each list spreads its rows to fill. */
-.mkt-cols { align-items: stretch; }
-.mkt-list {
-  flex: 1 1 auto;
-  display: flex; flex-direction: column;
-  justify-content: space-between; gap: 5px;
+/* Mercado: cada lista apila sus filas (3 columnas de alto natural). */
+.mkt-list { display: flex; flex-direction: column; gap: 4px; }
+
+/* Finanzas dashboard: ahorros y gastos lado a lado en 2 columnas. */
+.fin-summary-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 10px; flex: 1 1 auto;
+}
+.fin-summary-card .fin-total-banner,
+.fin-summary-card .fin-exp-total-banner { min-height: 76px; }
+
+/* ── Calidad del aire (card Clima): colores por banda AQI/UV ── */
+.air-good { color: #4ade80; }
+.air-mod  { color: #facc15; }
+.air-usg  { color: #fb923c; }
+.air-bad  { color: #f87171; }
+.air-vbad { color: #c084fc; }
+.air-haz  { color: #ef4444; }
+
+/* ── Acciones y ETFs (3ª columna Finnhub del card Mercado) ──── */
+.stocks-title { display: flex; align-items: center; gap: 6px; }
+.stocks-title .js-stocks-edit { margin-left: auto; }
+.stocks-edit-row { display: flex; gap: 6px; margin: 4px 0 2px; }
+.stocks-hint, .gh-content .stocks-hint {
+  font-size: 12px; color: #a1a1aa; line-height: 1.5; padding: 6px 0;
+}
+.stocks-hint code {
+  background: rgba(255,255,255,0.07); padding: 1px 5px; border-radius: 4px;
+  font-size: 11px; color: #93c5fd;
 }
 
-/* Finanzas dashboard: the two total banners grow to fill the summary card. */
-.fin-summary-card .fin-total-banner,
-.fin-summary-card .fin-exp-total-banner { flex: 1 1 0; min-height: 76px; }
+/* ── Feriados (Nager.Date, dashboard) ───────────────────────── */
+/* Mini cards bajas en una sola fila; scroll horizontal si no entran. */
+.holidays-list {
+  display: flex; flex-direction: row; gap: 8px;
+  overflow-x: auto; overflow-y: hidden;
+  padding-bottom: 4px;
+}
+.holidays-list::-webkit-scrollbar { height: 6px; }
+.holidays-list::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.16); border-radius: 3px; }
+.holidays-list::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.28); }
+.holidays-list::-webkit-scrollbar-track { background: transparent; }
+.holiday-card {
+  flex: 0 0 auto; max-width: 168px;
+  display: flex; flex-direction: column; gap: 1px;
+  background: rgba(255,255,255,0.025);
+  border: 1px solid rgba(255,255,255,0.06);
+  border-radius: 8px; padding: 5px 9px;
+}
+.holiday-card-top {
+  display: flex; align-items: baseline; gap: 7px;
+  font-variant-numeric: tabular-nums;
+}
+.holiday-card-date {
+  font-size: 11.5px; font-weight: 700; color: #93c5fd;
+  text-transform: capitalize; white-space: nowrap;
+}
+.holiday-card-count { font-size: 10.5px; color: #71717a; white-space: nowrap; margin-left: auto; }
+.holiday-card-count.soon { color: #facc15; font-weight: 700; }
+.holiday-card-count.today { color: #4ade80; font-weight: 700; }
+.holiday-card-name {
+  font-size: 11px; color: #d4d4d8;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* ── TVMaze: próximos episodios (tab Series) ────────────────── */
+/* Mini cards en una sola fila con scroll horizontal (como feriados). */
+.tvm-list {
+  display: flex; flex-direction: row; gap: 8px;
+  overflow-x: auto; overflow-y: hidden;
+  padding-bottom: 4px;
+}
+.tvm-list::-webkit-scrollbar { height: 6px; }
+.tvm-list::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.16); border-radius: 3px; }
+.tvm-list::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.28); }
+.tvm-list::-webkit-scrollbar-track { background: transparent; }
+.tvm-list .ai-loading { white-space: nowrap; }
+.tvm-card {
+  flex: 0 0 auto; width: 200px;
+  display: flex; align-items: center; gap: 9px;
+  background: rgba(255,255,255,0.025);
+  border: 1px solid rgba(74,222,128,0.22);
+  border-radius: 8px; padding: 6px 9px; cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+.tvm-card:hover { border-color: rgba(96,165,250,0.5); background: rgba(96,165,250,0.06); }
+.tvm-poster, .tvm-noimg {
+  width: 30px; height: 42px; object-fit: cover; border-radius: 5px; flex-shrink: 0;
+  border: 1px solid rgba(255,255,255,0.08);
+}
+.tvm-noimg { display: flex; align-items: center; justify-content: center; font-size: 14px; background: rgba(255,255,255,0.05); }
+.tvm-card-body { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 1px; }
+.tvm-card-title {
+  font-size: 12px; font-weight: 700; color: #e4e4e7;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.tvm-card-ep {
+  font-size: 10.5px; color: #a1a1aa; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums;
+}
+.tvm-card-ep b { color: #93c5fd; }
+.tvm-card-count { font-size: 10.5px; color: #71717a; white-space: nowrap; }
+.tvm-card-count.soon { color: #facc15; font-weight: 700; }
+.tvm-card-count.today { color: #4ade80; font-weight: 700; }
+
+/* ── Reddit (tab) ───────────────────────────────────────────── */
+.rd-subs { display: flex; flex-wrap: wrap; gap: 6px; }
+.rd-subs:empty { display: none; }
+.rd-chip {
+  display: inline-flex; align-items: center; gap: 5px;
+  background: rgba(255,255,255,0.04);
+  border: 1px solid rgba(255,255,255,0.08);
+  color: #d4d4d8; font-size: 11.5px; font-weight: 600;
+  padding: 3px 6px 3px 10px; border-radius: 999px; cursor: pointer;
+  transition: border-color 0.15s, background 0.15s, color 0.15s;
+}
+.rd-chip:hover { border-color: rgba(96,165,250,0.4); }
+.rd-chip.active { color: #e4e4e7; background: rgba(96,165,250,0.18); border-color: rgba(96,165,250,0.4); }
+.rd-chip-x {
+  background: none; border: none; color: #71717a; cursor: pointer;
+  font-size: 10px; line-height: 1; padding: 2px 4px; border-radius: 50%;
+}
+.rd-chip-x:hover { color: #f87171; }
+.rd-list { display: flex; flex-direction: column; gap: 5px; }
+.rd-post {
+  display: flex; align-items: center; gap: 10px;
+  background: rgba(255,255,255,0.025);
+  border: 1px solid rgba(255,255,255,0.06);
+  border-radius: 8px; padding: 6px 10px; cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+.rd-post:hover { border-color: rgba(96,165,250,0.4); background: rgba(96,165,250,0.06); }
+.rd-thumb, .rd-nothumb {
+  width: 56px; height: 42px; object-fit: cover; border-radius: 6px; flex-shrink: 0;
+  border: 1px solid rgba(255,255,255,0.08);
+}
+.rd-nothumb { display: flex; align-items: center; justify-content: center; font-size: 17px; background: rgba(255,255,255,0.05); }
+.rd-body { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 3px; }
+.rd-title {
+  font-size: 12.5px; font-weight: 600; color: #e4e4e7; line-height: 1.35;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.rd-meta { font-size: 11px; color: #71717a; display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+.rd-sub { color: #93c5fd; font-weight: 700; }
+.rd-ext {
+  background: rgba(96,165,250,0.12);
+  border: 1px solid rgba(96,165,250,0.3);
+  color: #93c5fd; font-size: 10.5px; font-weight: 600;
+  padding: 1px 7px; border-radius: 999px; cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.rd-ext:hover { background: rgba(96,165,250,0.25); color: #e4e4e7; }
+
+/* ── Noticias UY (tab) — reusa .rd-post/.rd-thumb/.rd-meta ───── */
+/* El feed trae ~40 ítems; sin tope, la ventana se autoajusta al contenido y el
+   largo del widget crece (y salta al filtrar / cargar imágenes). Acotamos la
+   lista con scroll interno para que la ventana mantenga un alto estable en esta
+   tab. En modo maximizado el scroll vive en .widget, así que liberamos el tope. */
+#news-list {
+  max-height: 500px;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+#news-list::-webkit-scrollbar { width: 8px; }
+#news-list::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.16); border-radius: 4px; }
+#news-list::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.28); }
+#news-list::-webkit-scrollbar-track { background: transparent; }
+body.maximized #news-list { max-height: none; overflow: visible; }
+
+.news-summary {
+  font-size: 11px; color: #a1a1aa; line-height: 1.35;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.news-post .rd-sub, .news-card .rd-sub, .news-cmp-meta { color: #fbbf24; }   /* diario en ámbar */
+
+/* Fila de chips de temas (separada un toque de las fuentes). */
+.news-topics { margin-top: -2px; }
+.news-topic-chip { display: inline-flex; align-items: center; gap: 5px; }
+.news-topic-chip b { color: #71717a; font-weight: 700; }
+.news-topic-chip.active b { color: #d4d4d8; }
+.news-dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; flex-shrink: 0; }
+
+/* Badges de tema (color por tema). */
+.news-tags { display: inline-flex; flex-wrap: wrap; gap: 4px; }
+.rd-meta .news-tags { margin-left: 4px; }
+.news-tag {
+  font-size: 9px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.3px;
+  padding: 1px 6px; border-radius: 999px; white-space: nowrap;
+  background: rgba(255,255,255,0.06);
+}
+.news-tag-politica     { color: #93c5fd; background: rgba(96,165,250,0.16); }
+.news-tag-policiales   { color: #fca5a5; background: rgba(248,113,113,0.16); }
+.news-tag-deportes     { color: #86efac; background: rgba(74,222,128,0.16); }
+.news-tag-economia     { color: #fcd34d; background: rgba(250,204,21,0.16); }
+.news-tag-mundo        { color: #c4b5fd; background: rgba(192,132,252,0.16); }
+.news-tag-espectaculos { color: #f9a8d4; background: rgba(244,114,182,0.16); }
+.news-tag-tecnologia   { color: #67e8f9; background: rgba(34,211,238,0.16); }
+.news-tag-salud        { color: #5eead4; background: rgba(45,212,191,0.16); }
+/* El puntito del chip toma el color sólido del tema (currentColor del .news-tag-<id>). */
+.news-dot[class*="news-tag-"] { background: currentColor; padding: 0; }
+
+/* Vista tarjetas: grilla con imagen grande arriba. */
+.news-cards {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+.news-card {
+  display: flex; flex-direction: column; min-width: 0;
+  background: rgba(255,255,255,0.025);
+  border: 1px solid rgba(255,255,255,0.06);
+  border-radius: 10px; overflow: hidden; cursor: pointer;
+  transition: border-color 0.15s, transform 0.15s;
+}
+.news-card:hover { border-color: rgba(96,165,250,0.4); transform: translateY(-2px); }
+.news-card-img { width: 100%; aspect-ratio: 16 / 9; object-fit: cover; display: block; background: rgba(255,255,255,0.04); }
+.news-card-noimg { display: flex; align-items: center; justify-content: center; font-size: 26px; color: #71717a; }
+.news-card-body { padding: 8px 10px 10px; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.news-card-title {
+  font-size: 13px; font-weight: 700; color: #e4e4e7; line-height: 1.3;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+
+/* Vista compacta: titulares densos en una línea. */
+.news-compact { display: flex; flex-direction: column; gap: 1px; }
+.news-cmp {
+  display: flex; align-items: center; gap: 8px;
+  padding: 5px 8px; border-radius: 6px; cursor: pointer;
+  border: 1px solid transparent;
+}
+.news-cmp:hover { background: rgba(96,165,250,0.06); border-color: rgba(96,165,250,0.25); }
+.news-cmp-title {
+  font-size: 12.5px; color: #e4e4e7; flex: 1; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.news-cmp-meta { font-size: 10.5px; white-space: nowrap; flex-shrink: 0; }
+
+/* ── Juegos: ofertas CheapShark (tab) ───────────────────────── */
+.gd-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+.gd-grid .ai-loading { grid-column: 1 / -1; }
+.gd-card {
+  background: rgba(255,255,255,0.025);
+  border: 1px solid rgba(255,255,255,0.07);
+  border-radius: 10px; overflow: hidden; cursor: pointer;
+  display: flex; flex-direction: column; min-width: 0;
+  transition: border-color 0.15s, transform 0.15s;
+}
+.gd-card:hover { border-color: rgba(96,165,250,0.4); transform: translateY(-2px); }
+.gd-thumb-wrap { position: relative; }
+.gd-thumb {
+  width: 100%; aspect-ratio: 2.1 / 1; object-fit: cover; display: block;
+  background: rgba(255,255,255,0.04);
+}
+.gd-nothumb { display: flex; align-items: center; justify-content: center; font-size: 26px; color: #71717a; }
+.gd-savings {
+  position: absolute; top: 6px; right: 6px;
+  font-size: 11.5px; font-weight: 800; color: #4ade80;
+  background: rgba(0,0,0,0.7); padding: 2px 7px; border-radius: 6px;
+}
+.gd-info { padding: 7px 9px 9px; display: flex; flex-direction: column; gap: 3px; flex: 1; }
+.gd-title {
+  font-size: 12px; font-weight: 700; color: #e4e4e7;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.gd-meta { font-size: 10.5px; color: #71717a; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gd-prices { display: flex; align-items: baseline; gap: 7px; margin-top: auto; padding-top: 3px; }
+.gd-old { font-size: 11px; color: #71717a; text-decoration: line-through; }
+.gd-new { font-size: 13px; font-weight: 800; color: #4ade80; font-variant-numeric: tabular-nums; }
+
+/* ── GitHub (tab) ───────────────────────────────────────────── */
+.gh-content { display: flex; flex-direction: column; gap: 5px; }
+.gh-section-title {
+  font-size: 11px; font-weight: 700; color: #c4b5fd;
+  text-transform: uppercase; letter-spacing: 0.5px;
+  padding: 8px 0 2px; border-bottom: 1px solid rgba(255,255,255,0.05);
+  display: flex; align-items: center; gap: 7px;
+}
+.gh-section-title:first-child { padding-top: 0; }
+.gh-badge {
+  background: rgba(96,165,250,0.18); color: #93c5fd;
+  font-size: 10px; font-weight: 800; padding: 1px 7px; border-radius: 999px;
+}
+.gh-row {
+  display: flex; align-items: center; gap: 10px;
+  background: rgba(255,255,255,0.025);
+  border: 1px solid rgba(255,255,255,0.06);
+  border-radius: 8px; padding: 6px 10px; cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+.gh-row:hover { border-color: rgba(96,165,250,0.4); background: rgba(96,165,250,0.06); }
+.gh-icon { font-size: 14px; flex-shrink: 0; width: 20px; text-align: center; }
+.gh-row-main { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 2px; }
+.gh-row-title {
+  font-size: 12.5px; font-weight: 600; color: #e4e4e7;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.gh-row-sub { font-size: 11px; color: #71717a; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gh-draft {
+  background: rgba(250,204,21,0.15); color: #facc15;
+  font-size: 10px; font-weight: 700; padding: 0 6px; border-radius: 4px;
+}
+.gh-empty { font-size: 12px; color: #71717a; padding: 4px 2px; }
+
+/* ── TMDB en el modal de serie ──────────────────────────────── */
+#ez-modal-tmdb:empty { display: none; }
+.ez-tmdb { display: flex; flex-direction: column; gap: 7px; }
+.ez-tmdb-overview { font-size: 12.5px; color: #a1a1aa; line-height: 1.5; }
+.ez-tmdb-prov { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+.ez-tmdb-prov-label {
+  font-size: 11px; font-weight: 700; color: #c4b5fd;
+  text-transform: uppercase; letter-spacing: 0.5px;
+}
+.ez-tmdb-prov-logo {
+  width: 26px; height: 26px; border-radius: 6px;
+  border: 1px solid rgba(255,255,255,0.1);
+}
+.ez-tmdb-prov-name {
+  font-size: 11.5px; color: #d4d4d8; font-weight: 600;
+  background: rgba(255,255,255,0.05); padding: 2px 8px; border-radius: 6px;
+}
+
+/* ── Settings: separador de grupos en el semáforo de APIs ───── */
+.apis-group-title {
+  font-size: 11px; font-weight: 700; color: #c4b5fd;
+  text-transform: uppercase; letter-spacing: 0.5px;
+  padding: 10px 0 2px; border-bottom: 1px solid rgba(255,255,255,0.05);
+}

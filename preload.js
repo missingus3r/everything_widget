@@ -25,9 +25,13 @@ contextBridge.exposeInMainWorld('api', {
   finances: {
     getState:     ()        => ipcRenderer.invoke('finances:get-state'),
     getHistory:   ()        => ipcRenderer.invoke('finances:get-history'),
+    getHistoryFull: ()      => ipcRenderer.invoke('finances:get-history-full'),
     saveManual:   (payload) => ipcRenderer.invoke('finances:save-manual', payload),
     clearAccount: (id)      => ipcRenderer.invoke('finances:clear-account', id),
     clearAll:     ()        => ipcRenderer.invoke('finances:clear-all'),
+    saveProjection:  (payload) => ipcRenderer.invoke('finances:save-projection', payload),
+    clearProjection: (id)      => ipcRenderer.invoke('finances:clear-projection', id),
+    saveDescription: (payload) => ipcRenderer.invoke('finances:save-description', payload),
     setHidden:    (hidden)  => ipcRenderer.invoke('finances:set-hidden', hidden),
     recordFx:     (ym, rate)=> ipcRenderer.invoke('finances:record-fx', { ym, rate }),
     mongoStatus:  ()        => ipcRenderer.invoke('finances:mongo-status'),
@@ -43,6 +47,65 @@ contextBridge.exposeInMainWorld('api', {
     list:        (params) => ipcRenderer.invoke('yify:list', params),
     details:     (id)     => ipcRenderer.invoke('yify:details', id),
     suggestions: (id)     => ipcRenderer.invoke('yify:suggestions', id),
+  },
+
+  favs: {
+    ids:    ()      => ipcRenderer.invoke('favs:ids'),
+    list:   ()      => ipcRenderer.invoke('favs:list'),
+    add:    (movie) => ipcRenderer.invoke('favs:add', movie),
+    remove: (id)    => ipcRenderer.invoke('favs:remove', id),
+  },
+
+  eztv: {
+    check:       ()       => ipcRenderer.invoke('eztv:check'),
+    list:        (params) => ipcRenderer.invoke('eztv:list', params),
+    shows:       (params) => ipcRenderer.invoke('eztv:shows', params),
+    searchShows: (query)  => ipcRenderer.invoke('eztv:search-shows', query),
+  },
+
+  sfavs: {
+    ids:    ()        => ipcRenderer.invoke('sfavs:ids'),
+    list:   ()        => ipcRenderer.invoke('sfavs:list'),
+    add:    (torrent) => ipcRenderer.invoke('sfavs:add', torrent),
+    remove: (id)      => ipcRenderer.invoke('sfavs:remove', id),
+  },
+
+  tvmaze: {
+    upcoming: () => ipcRenderer.invoke('tvmaze:upcoming'),
+  },
+
+  tmdb: {
+    tv: (imdbNum) => ipcRenderer.invoke('tmdb:tv', imdbNum),
+  },
+
+  reddit: {
+    posts: (params) => ipcRenderer.invoke('reddit:posts', params),
+  },
+
+  news: {
+    posts: (params) => ipcRenderer.invoke('news:posts', params),
+  },
+
+  holidays: {
+    next: () => ipcRenderer.invoke('holidays:next'),
+  },
+
+  games: {
+    deals: (params) => ipcRenderer.invoke('games:deals', params),
+  },
+
+  github: {
+    overview: () => ipcRenderer.invoke('github:overview'),
+  },
+
+  stocks: {
+    quotes:     ()        => ipcRenderer.invoke('stocks:quotes'),
+    setSymbols: (symbols) => ipcRenderer.invoke('stocks:set-symbols', symbols),
+  },
+
+  apiStatus: {
+    defs:  ()    => ipcRenderer.invoke('api-status:defs'),
+    check: (ids) => ipcRenderer.invoke('api-status:check', ids),
   },
 
   openExternal: (url) => ipcRenderer.invoke('open-external', url),

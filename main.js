@@ -13,6 +13,25 @@ const speedtestHistory = require('./speedtestHistory');
 const { readLocalUsage } = require('./localUsage');
 const finances = require('./finances');
 const { checkYify, fetchYifyMovies, fetchYifyDetails, fetchYifySuggestions } = require('./yify');
+const { checkEztv, fetchEztvTorrents, fetchEztvShows, searchShows } = require('./eztv');
+const favorites = require('./favorites');
+const { listApiDefs, checkApis } = require('./apiStatus');
+const { fetchUpcoming } = require('./tvmaze');
+const { fetchRedditPosts } = require('./reddit');
+const { fetchNews } = require('./news');
+const { fetchHolidays } = require('./holidays');
+const { fetchDeals } = require('./games');
+const { fetchGithub } = require('./github');
+const { fetchTvByImdb } = require('./tmdb');
+const { fetchQuotes, DEFAULT_SYMBOLS } = require('./stocks');
+
+// Key guardada en API Keys por nombre (case-insensitive): GitHub, TMDB, Finnhub…
+function getApiKey(name) {
+  const cfg = loadConfig();
+  const list = Array.isArray(cfg.apiKeys) ? cfg.apiKeys : [];
+  const hit = list.find((k) => (k.name || '').toLowerCase() === String(name).toLowerCase());
+  return (hit && hit.key) || '';
+}
 
 let win = null;
 let tray = null;
@@ -399,6 +418,187 @@ ipcMain.handle('yify:suggestions', async (_e, movieId) => {
     return { error: String(e && e.message || e) };
   }
 });
+
+// ── Estado de las APIs (Settings) ──────────────────────────────
+ipcMain.handle('api-status:defs', () => listApiDefs());
+ipcMain.handle('api-status:check', async (_e, ids) => {
+  try { return await checkApis(ids); }
+  catch { return []; }
+});
+
+// ── EZTV series ────────────────────────────────────────────────
+// Mismo contrato defensivo que YIFY: eztv:check nunca tira, el resto degrada
+// a { error }. La búsqueda por nombre va contra la suggestion API de IMDb.
+ipcMain.handle('eztv:check', () => checkEztv());
+ipcMain.handle('eztv:list', async (_e, params) => {
+  try {
+    return await fetchEztvTorrents(params || {});
+  } catch (e) {
+    return { error: String(e && e.message || e) };
+  }
+});
+ipcMain.handle('eztv:shows', async (_e, params) => {
+  try {
+    return await fetchEztvShows(params || {});
+  } catch (e) {
+    return { error: String(e && e.message || e) };
+  }
+});
+ipcMain.handle('eztv:search-shows', async (_e, query) => {
+  try {
+    return await searchShows(query);
+  } catch (e) {
+    return { error: String(e && e.message || e) };
+  }
+});
+
+// ── TVMaze: próximos episodios de las series favoritas ─────────
+// Los imdb ids salen de los favoritos guardados en la base; TVMaze resuelve
+// el próximo episodio de cada serie. Degrada a { error }.
+ipcMain.handle('tvmaze:upcoming', async () => {
+  try {
+    const favs = await favorites.listSeries();
+    const ids = (Array.isArray(favs) ? favs : []).map((f) => f.imdbId).filter(Boolean);
+    return await fetchUpcoming(ids);
+  } catch (e) {
+    return { error: String(e && e.message || e) };
+  }
+});
+
+// ── TMDB: ficha de serie en español + dónde ver (modal) ────────
+ipcMain.handle('tmdb:tv', async (_e, imdbNum) => {
+  try {
+    return await fetchTvByImdb(getApiKey('TMDB'), imdbNum);
+  } catch (e) {
+    return { error: String(e && e.message || e) };
+  }
+});
+
+// ── Reddit ─────────────────────────────────────────────────────
+ipcMain.handle('reddit:posts', async (_e, params) => {
+  try {
+    return await fetchRedditPosts(params || {});
+  } catch (e) {
+    return { error: String(e && e.message || e) };
+  }
+});
+
+// ── Noticias UY (feeds RSS) ────────────────────────────────────
+ipcMain.handle('news:posts', async (_e, params) => {
+  try {
+    return await fetchNews(params || {});
+  } catch (e) {
+    return { error: String(e && e.message || e) };
+  }
+});
+
+// ── Feriados (Nager.Date) ──────────────────────────────────────
+ipcMain.handle('holidays:next', async () => {
+  try {
+    return await fetchHolidays('UY');
+  } catch (e) {
+    return { error: String(e && e.message || e) };
+  }
+});
+
+// ── Juegos (CheapShark) ────────────────────────────────────────
+ipcMain.handle('games:deals', async (_e, params) => {
+  try {
+    return await fetchDeals(params || {});
+  } catch (e) {
+    return { error: String(e && e.message || e) };
+  }
+});
+
+// ── GitHub (token en API Keys con nombre "GitHub") ─────────────
+ipcMain.handle('github:overview', async () => {
+  try {
+    return await fetchGithub(getApiKey('GitHub'));
+  } catch (e) {
+    return { error: String(e && e.message || e) };
+  }
+});
+
+// ── Acciones y ETFs (Finnhub, key en API Keys) ─────────────────
+ipcMain.handle('stocks:quotes', async () => {
+  try {
+    const cfg = loadConfig();
+    const symbols = Array.isArray(cfg.stockSymbols) && cfg.stockSymbols.length
+      ? cfg.stockSymbols : DEFAULT_SYMBOLS;
+    const r = await fetchQuotes(getApiKey('Finnhub'), symbols);
+    return { ...r, symbols };
+  } catch (e) {
+    return { error: String(e && e.message || e) };
+  }
+});
+ipcMain.handle('stocks:set-symbols', (_e, symbols) => {
+  const list = (Array.isArray(symbols) ? symbols : [])
+    .map((s) => String(s || '').trim().toUpperCase())
+    .filter((s) => /^[A-Z.\-^]{1,12}$/.test(s))
+    .slice(0, 12);
+  saveConfig({ stockSymbols: list });
+  return list;
+});
+
+// ── Favoritos (YIFY) ───────────────────────────────────────────
+// Persisten completos en SQLite (portada incluida) para sobrevivir a la API.
+// Al agregar se intenta enriquecer con movie_details (sinopsis completa +
+// cast); si la API no responde se guarda lo que el renderer ya tenía.
+ipcMain.handle('favs:ids', async () => {
+  try { return await favorites.getIds(); }
+  catch { return []; }
+});
+ipcMain.handle('favs:list', async () => {
+  try { return await favorites.list(); }
+  catch (e) { return { error: String(e && e.message || e) }; }
+});
+ipcMain.handle('favs:add', async (_e, movie) => {
+  try {
+    if (!movie || !movie.id) return { error: 'película inválida' };
+    let full = movie;
+    try { full = { ...movie, ...(await fetchYifyDetails(movie.id)) }; } catch {}
+    await favorites.add(full);
+    return { ok: true };
+  } catch (e) {
+    return { error: String(e && e.message || e) };
+  }
+});
+ipcMain.handle('favs:remove', async (_e, movieId) => {
+  try {
+    await favorites.remove(movieId);
+    return { ok: true };
+  } catch (e) {
+    return { error: String(e && e.message || e) };
+  }
+});
+
+// ── Favoritos de series (EZTV) ─────────────────────────────────
+// El renderer pasa el torrent normalizado + contexto de la serie (showTitle /
+// showImage de IMDb); no hay endpoint de detalles que enriquecer.
+ipcMain.handle('sfavs:ids', async () => {
+  try { return await favorites.getSeriesIds(); }
+  catch { return []; }
+});
+ipcMain.handle('sfavs:list', async () => {
+  try { return await favorites.listSeries(); }
+  catch (e) { return { error: String(e && e.message || e) }; }
+});
+ipcMain.handle('sfavs:add', async (_e, torrent) => {
+  try {
+    await favorites.addSeries(torrent);
+    return { ok: true };
+  } catch (e) {
+    return { error: String(e && e.message || e) };
+  }
+});
+ipcMain.handle('sfavs:remove', async (_e, torrentId) => {
+  try {
+    await favorites.removeSeries(torrentId);
+    return { ok: true };
+  } catch (e) {
+    return { error: String(e && e.message || e) };
+  }
+});
 ipcMain.handle('reset-speedtest-history', () => speedtestHistory.reset());
 
 // ── Tray usage push (from renderer) ────────────────────────────
@@ -429,14 +629,28 @@ ipcMain.handle('save-api-keys', (_event, keys) => {
 // ── Finanzas ───────────────────────────────────────────────────
 ipcMain.handle('finances:get-state', () => finances.getState());
 ipcMain.handle('finances:get-history', () => finances.getHistory());
+ipcMain.handle('finances:get-history-full', () => finances.getHistoryFull());
 ipcMain.handle('finances:save-manual', (_e, { accountId, uyu, usd }) =>
   finances.saveManual(accountId, uyu, usd));
 ipcMain.handle('finances:clear-account', (_e, accountId) => finances.clearAccount(accountId));
 ipcMain.handle('finances:clear-all', () => finances.clearAll());
+ipcMain.handle('finances:save-projection', (_e, { accountId, uyu, usd }) =>
+  finances.saveProjection(accountId, uyu, usd));
+ipcMain.handle('finances:clear-projection', (_e, accountId) => finances.clearProjection(accountId));
+ipcMain.handle('finances:save-description', (_e, { accountId, text }) =>
+  finances.saveDescription(accountId, text));
 ipcMain.handle('finances:set-hidden', (_e, hidden) => finances.setHidden(hidden));
 ipcMain.handle('finances:record-fx', (_e, { ym, rate }) => finances.recordFx(ym, rate));
 ipcMain.handle('finances:mongo-status', () => finances.getMongoStatus());
-ipcMain.handle('finances:sync', () => finances.syncNow());
+// "Sincronizar bases" reconcilia Finanzas y también los favoritos de YIFY
+// (misma base de Mongo). La UI muestra el estado de Finanzas.
+ipcMain.handle('finances:sync', async () => {
+  const [st] = await Promise.all([
+    finances.syncNow(),
+    favorites.syncNow().catch(() => {}),
+  ]);
+  return st;
+});
 ipcMain.handle('finances:list-expenses', () => finances.listExpenses());
 ipcMain.handle('finances:add-expense', (_e, payload) => finances.addExpense(payload));
 ipcMain.handle('finances:update-expense', (_e, payload) => finances.updateExpense(payload));

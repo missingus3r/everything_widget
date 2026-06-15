@@ -120,16 +120,23 @@ function numOrNull(v) {
 
 async function getState() {
   await ensureDb();
+  const projections = db.getProjections();
   const accounts = ACCOUNTS.map((a) => {
     const st = db.getAccountState(a.id);
+    const proj = projections[a.id] || {};
     return {
       id: a.id,
       name: a.name,
       url: a.url || null,
       currencies: a.currencies,
+      invest: !!a.invest,
       ts: st.ts,
       uyu: st.uyu,
       usd: st.usd,
+      // Forecast (not part of the saved balance): { uyu, usd } amounts for the
+      // regular accounts, or a free-text `description` for the Inversiones card.
+      projection: { uyu: proj.uyu == null ? null : proj.uyu, usd: proj.usd == null ? null : proj.usd },
+      description: proj.desc || null,
     };
   });
   return {
@@ -188,6 +195,20 @@ async function getHistory() {
   return points;
 }
 
+// Detailed history for the savings modal chart: the aggregate series plus the
+// raw per-account series (oldest first), so the renderer can plot every metric.
+async function getHistoryFull() {
+  await ensureDb();
+  return {
+    total: await getHistory(),
+    accounts: ACCOUNTS.map((a) => ({
+      id: a.id,
+      name: a.name,
+      points: db.history(a.id),   // [{ ts, uyu, usd }]
+    })),
+  };
+}
+
 async function setHidden(hidden) {
   await ensureDb();
   db.setSetting('hidden', hidden ? '1' : '0');
@@ -233,6 +254,72 @@ async function clearAll() {
   await ensureDb();
   db.clearAll();
   await mongo.deleteAllSnapshots();
+  return { ok: true };
+}
+
+// ── Proyección mensual / descripción de inversiones ──────────────
+// A per-account forecast that is intentionally NOT added to the saved balances.
+// Saving overwrites the account's entry (it never accumulates); clearing removes
+// it. Persisted as the single `fin_projections` JSON setting, mirrored to Mongo.
+
+// Persist the current map to both stores.
+async function persistProjections(map) {
+  db.setProjections(map);
+  await mongo.upsertSetting('fin_projections', JSON.stringify(map));
+}
+
+// Set the projected pesos/dollars for an account. Blank currencies are left
+// untouched so updating one currency doesn't wipe the other; a currency the
+// account can't hold is ignored.
+async function saveProjection(accountId, uyu, usd) {
+  const acc = getAccount(accountId);
+  if (!acc) return { ok: false, error: 'cuenta inválida' };
+  if (acc.invest) return { ok: false, error: 'esta cuenta usa descripción, no proyección' };
+  await ensureDb();
+  const map = db.getProjections();
+  const prev = map[accountId] || {};
+  const entry = {};
+  if (acc.currencies.includes('UYU')) {
+    const u = numOrNull(uyu);
+    if (u != null) entry.uyu = u;
+    else if (prev.uyu != null) entry.uyu = prev.uyu;
+  }
+  if (acc.currencies.includes('USD')) {
+    const d = numOrNull(usd);
+    if (d != null) entry.usd = d;
+    else if (prev.usd != null) entry.usd = prev.usd;
+  }
+  if (entry.uyu == null && entry.usd == null) {
+    return { ok: false, error: 'ingresá al menos un monto' };
+  }
+  map[accountId] = entry;
+  await persistProjections(map);
+  return { ok: true };
+}
+
+// Remove an account's projection entirely.
+async function clearProjection(accountId) {
+  const acc = getAccount(accountId);
+  if (!acc) return { ok: false, error: 'cuenta inválida' };
+  await ensureDb();
+  const map = db.getProjections();
+  if (!(accountId in map)) return { ok: true };
+  delete map[accountId];
+  await persistProjections(map);
+  return { ok: true };
+}
+
+// Free-text description for the Inversiones card (the list of investments).
+// Empty text clears the entry.
+async function saveDescription(accountId, text) {
+  const acc = getAccount(accountId);
+  if (!acc) return { ok: false, error: 'cuenta inválida' };
+  await ensureDb();
+  const map = db.getProjections();
+  const t = String(text == null ? '' : text).trim();
+  if (t) map[accountId] = { desc: t };
+  else delete map[accountId];
+  await persistProjections(map);
   return { ok: true };
 }
 
@@ -307,7 +394,8 @@ async function deleteExpense(id) {
 }
 
 module.exports = {
-  getState, getHistory, saveManual, clearAccount, clearAll, setHidden, recordFx,
+  getState, getHistory, getHistoryFull, saveManual, clearAccount, clearAll, setHidden, recordFx,
+  saveProjection, clearProjection, saveDescription,
   listExpenses, addExpense, updateExpense, deleteExpense,
   getMongoStatus, syncNow,
 };

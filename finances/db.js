@@ -122,6 +122,21 @@ function setFxMonth(ym, rate) {
   return map;
 }
 
+// Per-account monthly projection / investment description, stored as one JSON
+// setting `fin_projections`: { "<accountId>": { uyu, usd } | { desc } }. It is a
+// forecast that does NOT add to the saved balances; saving overwrites the entry
+// (it never accumulates) and clearing removes it. Reuses the settings table so it
+// rides the existing Mongo sync with no schema change.
+function getProjections() {
+  try { return JSON.parse(getSetting('fin_projections') || '{}') || {}; }
+  catch { return {}; }
+}
+
+function setProjections(map) {
+  setSetting('fin_projections', JSON.stringify(map || {}));
+  return map || {};
+}
+
 // Delete all snapshots for a single account (resets its balance to empty).
 function clearAccount(account) {
   if (!db) throw new Error('db not initialized');
@@ -290,6 +305,7 @@ module.exports = {
   init, insertSnapshot, getAccountState, history,
   clearAccount, clearAll, getSetting, setSetting, DB_PATH,
   getFxMonthly, setFxMonth,
+  getProjections, setProjections,
   listExpenses, insertExpense, updateExpense, deleteExpense,
   getAllSnapshots, getAllSettings, replaceAll,
 };

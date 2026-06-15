@@ -15,6 +15,8 @@ const DEFAULTS = {
   // Zoom factor for the widget window (corner-drag scaling). 1 = 100%.
   widgetZoom: 1,
   apiKeys: [],
+  // Símbolos del bloque "Acciones y ETFs" del card Mercado (Finnhub).
+  stockSymbols: ['AAPL', 'MSFT', 'NVDA', 'SPY', 'VOO'],
   pricing: {
     claude: {
       perMillionInput: 3,

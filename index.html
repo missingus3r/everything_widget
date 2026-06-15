@@ -9,6 +9,8 @@
 <body>
   <div class="widget">
 
+    <!-- Top fijo: no scrollea con el contenido (sticky). -->
+    <div class="widget-top">
     <div class="titlebar">
       <div class="titlebar-left">
         <span class="titlebar-icon">🖥</span>
@@ -24,10 +26,16 @@
     <div class="tabs">
       <button class="tab active" data-tab="dashboard">Dashboard</button>
       <button class="tab" data-tab="finanzas">Finanzas</button>
-      <button class="tab" data-tab="torrents">Torrents</button>
+      <button class="tab" data-tab="torrents">Films</button>
+      <button class="tab" data-tab="series">Series</button>
+      <button class="tab" data-tab="juegos">Juegos</button>
+      <button class="tab" data-tab="reddit">Reddit</button>
+      <button class="tab" data-tab="noticias">Noticias</button>
+      <button class="tab" data-tab="github">GitHub</button>
       <button class="tab" data-tab="keys">API Keys</button>
       <button class="tab" data-tab="settings">Settings</button>
     </div>
+    </div><!-- /widget-top -->
 
     <div class="screen" id="tab-dashboard">
 
@@ -190,21 +198,43 @@
             <button id="mkt-refresh" class="mini-refresh" title="Actualizar">↻</button>
           </span>
         </div>
-        <div id="mkt-content" class="mkt-content">
-          <div class="ai-loading">Cargando mercado…</div>
+        <!-- 3 columnas: Cripto · Divisas · Acciones (display:contents en CSS). -->
+        <div class="mkt-grid3">
+          <div id="mkt-content" class="mkt-content">
+            <div class="ai-loading">Cargando mercado…</div>
+          </div>
+          <!-- Acciones y ETFs (Finnhub). El renderer lo llena; sin key muestra el hint. -->
+          <div id="stocks-block" class="stocks-block"></div>
         </div>
       </section>
 
-      <!-- YIFY: últimas películas (oculto si la API está caída) -->
+      <!-- Próximos feriados de Uruguay (Nager.Date) -->
+      <section class="card" id="holidays-card" hidden>
+        <div class="card-head">
+          <span class="card-title">🇺🇾 Próximos feriados <span class="mkt-src">· Nager.Date</span></span>
+        </div>
+        <div id="holidays-list" class="holidays-list"></div>
+      </section>
+
+      <!-- Últimos estrenos: películas (izq) + series (der). Oculto si ambas APIs caídas. -->
       <section class="card yify-card" id="yify-dash-card" hidden>
         <div class="card-head">
-          <span class="card-title">🎬 Últimas películas <span class="mkt-src">· YIFY</span></span>
+          <span class="card-title">Últimos estrenos</span>
           <span class="card-head-right">
             <span class="card-sub" id="yify-dash-when">—</span>
             <button id="yify-dash-refresh" class="mini-refresh" title="Actualizar">↻</button>
           </span>
         </div>
-        <div id="yify-dash" class="yify-dash-grid"></div>
+        <div class="dash-media-split">
+          <div class="dash-media-col">
+            <div class="dash-media-label">🎬 Películas <span class="mkt-src">· YIFY</span></div>
+            <div id="yify-dash" class="dash-media-grid"></div>
+          </div>
+          <div class="dash-media-col dash-media-col-sep">
+            <div class="dash-media-label">📺 Series <span class="mkt-src">· EZTV</span></div>
+            <div id="ez-dash" class="dash-media-grid"></div>
+          </div>
+        </div>
       </section>
 
       <!-- Finanzas (resumen) -->
@@ -213,32 +243,35 @@
           <span class="card-title">Finanzas</span>
           <span class="card-sub">ver detalle →</span>
         </div>
-        <div class="fin-total-banner">
-          <span class="fin-total-label">Ahorros totales</span>
-          <div class="fin-total-lines">
-            <div class="fin-total-line">
-              <span class="fin-total-cur">$U</span>
-              <span class="fin-total-amt" id="fin-sum-uyu">—</span>
+        <!-- Ahorros y gastos lado a lado: 2 columnas en una fila. -->
+        <div class="fin-summary-row">
+          <div class="fin-total-banner">
+            <span class="fin-total-label">Ahorros totales</span>
+            <div class="fin-total-lines">
+              <div class="fin-total-line">
+                <span class="fin-total-cur">$U</span>
+                <span class="fin-total-amt" id="fin-sum-uyu">—</span>
+              </div>
+              <div class="fin-total-line">
+                <span class="fin-total-cur">U$S</span>
+                <span class="fin-total-amt" id="fin-sum-usd">—</span>
+              </div>
+              <div class="fin-total-conv" id="fin-sum-conv"></div>
             </div>
-            <div class="fin-total-line">
-              <span class="fin-total-cur">U$S</span>
-              <span class="fin-total-amt" id="fin-sum-usd">—</span>
-            </div>
-            <div class="fin-total-conv" id="fin-sum-conv"></div>
           </div>
-        </div>
-        <div class="fin-exp-total-banner">
-          <span class="fin-exp-total-label">Gastos fijos totales <span class="fin-summary-svc-count" id="fin-sum-svc-count"></span></span>
-          <div class="fin-total-lines">
-            <div class="fin-total-line">
-              <span class="fin-total-cur">$U</span>
-              <span class="fin-total-amt" id="fin-sum-svc-uyu">—</span>
+          <div class="fin-exp-total-banner">
+            <span class="fin-exp-total-label">Gastos fijos totales <span class="fin-summary-svc-count" id="fin-sum-svc-count"></span></span>
+            <div class="fin-total-lines">
+              <div class="fin-total-line">
+                <span class="fin-total-cur">$U</span>
+                <span class="fin-total-amt" id="fin-sum-svc-uyu">—</span>
+              </div>
+              <div class="fin-total-line">
+                <span class="fin-total-cur">U$S</span>
+                <span class="fin-total-amt" id="fin-sum-svc-usd">—</span>
+              </div>
+              <div class="fin-total-conv" id="fin-sum-svc-conv"></div>
             </div>
-            <div class="fin-total-line">
-              <span class="fin-total-cur">U$S</span>
-              <span class="fin-total-amt" id="fin-sum-svc-usd">—</span>
-            </div>
-            <div class="fin-total-conv" id="fin-sum-svc-conv"></div>
           </div>
         </div>
       </section>
@@ -365,7 +398,7 @@
     <div class="screen hidden" id="tab-torrents">
       <section class="card">
         <div class="card-head">
-          <span class="card-title">🎬 YIFY Torrents</span>
+          <span class="card-title">🎬 Torrents Films <span class="mkt-src">· YIFY</span></span>
           <span class="card-head-right">
             <span class="db-status" id="yify-status">
               <span class="db-dot"></span>
@@ -381,6 +414,7 @@
             <button class="yify-view-btn" data-view="icons" title="Vista iconos pequeños">▩</button>
             <button class="yify-view-btn" data-view="list" title="Vista lista con detalles">☰</button>
           </div>
+          <button id="yify-favs-btn" class="yify-view-btn yify-favs-btn" title="Favoritos guardados (funcionan aunque la API muera)">♥</button>
           <button id="yify-search-btn" class="fin-btn">Buscar</button>
         </div>
         <div class="yify-search-row yify-filters">
@@ -435,6 +469,159 @@
       </section>
     </div>
 
+    <div class="screen hidden" id="tab-series">
+      <!-- Próximos episodios de las series favoritas (TVMaze, cruce por imdb id) -->
+      <section class="card">
+        <div class="card-head">
+          <span class="card-title">📅 Próximos episodios <span class="mkt-src">· TVMaze</span></span>
+          <span class="card-head-right">
+            <span class="card-sub" id="tvm-when">—</span>
+            <button id="tvm-refresh" class="mini-refresh" title="Actualizar">↻</button>
+          </span>
+        </div>
+        <div id="tvm-list" class="tvm-list">
+          <div class="ai-loading">Cargando…</div>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="card-head">
+          <span class="card-title">📺 Torrents Series <span class="mkt-src">· EZTV</span></span>
+          <span class="card-head-right">
+            <span class="db-status" id="ez-status">
+              <span class="db-dot"></span>
+              <span id="ez-status-text">Verificando…</span>
+            </span>
+            <button id="ez-refresh" class="mini-refresh" title="Actualizar">↻</button>
+          </span>
+        </div>
+        <div class="yify-search-row">
+          <input id="ez-search" class="fin-input" placeholder="Buscar serie por nombre… (Enter)" autocomplete="off">
+          <button id="ez-favs-btn" class="yify-view-btn yify-favs-btn" title="Favoritos guardados (funcionan aunque la API muera)">♥</button>
+          <button id="ez-search-btn" class="fin-btn">Buscar</button>
+        </div>
+        <!-- Resultados de IMDb (chips de series): click → modal de la serie. -->
+        <div id="ez-shows" class="ez-shows"></div>
+        <div id="ez-list" class="yify-table">
+          <div class="ai-loading">Verificando API…</div>
+        </div>
+        <div id="ez-pager" class="yify-pager"></div>
+      </section>
+    </div>
+
+    <div class="screen hidden" id="tab-juegos">
+      <section class="card">
+        <div class="card-head">
+          <span class="card-title">🎮 Ofertas de juegos <span class="mkt-src">· CheapShark · USD</span></span>
+          <span class="card-head-right">
+            <span class="card-sub" id="gd-when">—</span>
+            <button id="gd-refresh" class="mini-refresh" title="Actualizar">↻</button>
+          </span>
+        </div>
+        <div class="yify-search-row">
+          <input id="gd-search" class="fin-input" placeholder="Buscar juego por título… (Enter)" autocomplete="off">
+          <button id="gd-search-btn" class="fin-btn">Buscar</button>
+        </div>
+        <div class="yify-search-row yify-filters">
+          <select id="gd-store" class="fin-select" title="Tienda">
+            <option value="">Todas las tiendas</option>
+          </select>
+          <select id="gd-sort" class="fin-select" title="Ordenar por">
+            <option value="Deal Rating">Mejor oferta</option>
+            <option value="Savings">% de descuento</option>
+            <option value="Price">Precio</option>
+            <option value="Recent">Recientes</option>
+            <option value="Metacritic">Metacritic</option>
+          </select>
+          <select id="gd-maxprice" class="fin-select" title="Precio máximo">
+            <option value="0">Sin tope</option>
+            <option value="5">Hasta U$S 5</option>
+            <option value="10">Hasta U$S 10</option>
+            <option value="20">Hasta U$S 20</option>
+            <option value="30">Hasta U$S 30</option>
+          </select>
+        </div>
+        <div id="gd-list" class="gd-grid">
+          <div class="ai-loading">Cargando ofertas…</div>
+        </div>
+        <div id="gd-pager" class="yify-pager"></div>
+      </section>
+    </div>
+
+    <div class="screen hidden" id="tab-reddit">
+      <section class="card">
+        <div class="card-head">
+          <span class="card-title">👽 Reddit <span class="mkt-src">· feeds públicos</span></span>
+          <span class="card-head-right">
+            <span class="card-sub" id="rd-when">—</span>
+            <button id="rd-refresh" class="mini-refresh" title="Actualizar">↻</button>
+          </span>
+        </div>
+        <div class="yify-search-row">
+          <input id="rd-add" class="fin-input" placeholder="Agregar subreddit (ej. uruguay)… (Enter)" autocomplete="off">
+          <select id="rd-sort" class="fin-select" title="Orden">
+            <option value="hot">Hot</option>
+            <option value="new">Nuevos</option>
+            <option value="top">Top</option>
+          </select>
+          <select id="rd-t" class="fin-select" title="Período (solo Top)" hidden>
+            <option value="day">Hoy</option>
+            <option value="week">Semana</option>
+            <option value="month">Mes</option>
+          </select>
+          <button id="rd-add-btn" class="fin-btn">+ Sub</button>
+        </div>
+        <!-- Chips de subreddits activos (click ✕ para sacar, click para solo ese sub) -->
+        <div id="rd-subs" class="rd-subs"></div>
+        <div id="rd-list" class="rd-list">
+          <div class="ai-loading">Cargando posts…</div>
+        </div>
+      </section>
+    </div>
+
+    <div class="screen hidden" id="tab-noticias">
+      <section class="card">
+        <div class="card-head">
+          <span class="card-title">📰 Noticias UY <span class="mkt-src">· feeds RSS</span></span>
+          <span class="card-head-right">
+            <span class="card-sub" id="news-when">—</span>
+            <button id="news-refresh" class="mini-refresh" title="Actualizar">↻</button>
+          </span>
+        </div>
+        <div class="yify-search-row">
+          <input id="news-search" class="fin-input" placeholder="Buscar en las noticias… (título, texto o diario)" autocomplete="off">
+          <div class="yify-view-toggle" id="news-view-toggle">
+            <button class="yify-view-btn" data-view="cards" title="Tarjetas">▦</button>
+            <button class="yify-view-btn" data-view="list" title="Lista">☰</button>
+            <button class="yify-view-btn" data-view="compact" title="Compacta">≡</button>
+          </div>
+          <button id="news-search-clear" class="fin-btn" title="Limpiar búsqueda">✕</button>
+        </div>
+        <!-- Chips de fuentes (click para activar/desactivar cada diario). -->
+        <div id="news-sources" class="rd-subs"></div>
+        <!-- Chips de temas (Todos + policiales, política, deportes…). -->
+        <div id="news-topics" class="rd-subs news-topics"></div>
+        <div id="news-list" class="rd-list">
+          <div class="ai-loading">Cargando noticias…</div>
+        </div>
+      </section>
+    </div>
+
+    <div class="screen hidden" id="tab-github">
+      <section class="card">
+        <div class="card-head">
+          <span class="card-title">🐙 GitHub <span class="mkt-src" id="gh-login"></span></span>
+          <span class="card-head-right">
+            <span class="card-sub" id="gh-when">—</span>
+            <button id="gh-refresh" class="mini-refresh" title="Actualizar">↻</button>
+          </span>
+        </div>
+        <div id="gh-content" class="gh-content">
+          <div class="ai-loading">Cargando…</div>
+        </div>
+      </section>
+    </div>
+
     <div class="screen hidden" id="tab-keys">
       <div class="keys-content">
         <div class="keys-list" id="keys-list"></div>
@@ -445,8 +632,9 @@
           <button id="key-add-btn" class="key-add-btn">+ Agregar</button>
           <div class="key-status" id="key-status"></div>
           <div class="key-hint">
-            Tip: para que aparezca ElevenLabs en el dashboard, guardá una key con nombre
-            exactamente <code>ElevenLabs</code>.
+            Tip: los nombres conectan servicios del widget — <code>ElevenLabs</code> (uso en el
+            dashboard), <code>GitHub</code> (token personal, tab GitHub), <code>TMDB</code>
+            (fichas de series) y <code>Finnhub</code> (acciones y ETFs en Mercado).
           </div>
         </div>
       </div>
@@ -476,6 +664,18 @@
             <button class="db-sync-btn" id="btn-sync-db" type="button">Sincronizar bases</button>
           </div>
           <div class="setting-status" id="sync-status"></div>
+        </div>
+
+        <div class="setting-block">
+          <div class="setting-text">
+            <span class="setting-label">APIs del sistema</span>
+            <span class="setting-desc">Estado de los servicios externos que alimentan el widget. Click en una fila para re-verificar solo esa API.</span>
+          </div>
+          <div id="apis-list" class="apis-list"></div>
+          <div class="db-row">
+            <span class="setting-status" id="apis-summary"></span>
+            <button class="db-sync-btn" id="btn-check-apis" type="button">Verificar todas</button>
+          </div>
         </div>
       </div>
     </div>

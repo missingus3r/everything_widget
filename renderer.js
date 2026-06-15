@@ -35,6 +35,17 @@ const firedResets = new Set();
 // ── DOM refs ───────────────────────────────────────────────────
 const $ = (id) => document.getElementById(id);
 
+// Debounce: retrasa la ejecución hasta que dejan de pasar eventos por `wait` ms.
+// Lo usan los buscadores que le pegan a una API para buscar en vivo mientras se
+// escribe sin disparar una request por cada tecla.
+function debounce(fn, wait = 350) {
+  let t = null;
+  return function (...args) {
+    if (t) clearTimeout(t);
+    t = setTimeout(() => { t = null; fn.apply(this, args); }, wait);
+  };
+}
+
 document.getElementById('btn-min').addEventListener('click', () => window.api.minimize());
 document.getElementById('btn-max').addEventListener('click', () => window.api.maximize());
 document.getElementById('btn-close').addEventListener('click', () => window.api.close());
@@ -54,6 +65,11 @@ const tabPanels = {
   dashboard: document.getElementById('tab-dashboard'),
   finanzas: document.getElementById('tab-finanzas'),
   torrents: document.getElementById('tab-torrents'),
+  series: document.getElementById('tab-series'),
+  juegos: document.getElementById('tab-juegos'),
+  reddit: document.getElementById('tab-reddit'),
+  noticias: document.getElementById('tab-noticias'),
+  github: document.getElementById('tab-github'),
   keys: document.getElementById('tab-keys'),
   settings: document.getElementById('tab-settings'),
 };
@@ -65,6 +81,10 @@ function switchTab(target) {
   if (target === 'keys') loadKeys();
   if (target === 'settings') loadSettings();
   if (target === 'finanzas') renderFinanzas();
+  if (target === 'juegos') initGames();    // lazy: primera vez que se abre
+  if (target === 'reddit') initReddit();
+  if (target === 'noticias') initNews();
+  if (target === 'github') initGithub();
   adjustWindowSize();
 }
 tabButtons.forEach((btn) => {
@@ -78,6 +98,9 @@ function adjustWindowSize() {
   resizeRaf = requestAnimationFrame(() => {
     const widget = document.querySelector('.widget');
     if (!widget) return;
+    // Alto del top fijo (controles + menú): el reloj sticky se ancla debajo.
+    const top = document.querySelector('.widget-top');
+    if (top) document.documentElement.style.setProperty('--topbar-h', top.offsetHeight + 'px');
     const h = Math.ceil(widget.getBoundingClientRect().height);
     if (window.api && window.api.resizeContent) window.api.resizeContent(h);
   });
@@ -265,6 +288,7 @@ function renderWeather(w) {
           Humedad <b>${c.humidity != null ? c.humidity + '%' : '—'}</b> ·
           Viento <b>${c.wind != null ? c.wind + ' km/h' : '—'}</b>
         </div>
+        ${airDetailHtml(w.air)}
       </div>
     </div>
     <div class="weather-cell">
@@ -290,6 +314,37 @@ function renderWeather(w) {
 function fmtTemp(t) {
   if (t == null || !isFinite(t)) return '—';
   return Math.round(t) + '°';
+}
+
+// Calidad del aire (US AQI) + UV, bajo el detalle de "Ahora". Colores por
+// banda oficial del AQI; UV por la escala de la OMS.
+function aqiBand(aqi) {
+  if (aqi <= 50) return ['Buena', 'good'];
+  if (aqi <= 100) return ['Moderada', 'mod'];
+  if (aqi <= 150) return ['Sensibles', 'usg'];
+  if (aqi <= 200) return ['Mala', 'bad'];
+  if (aqi <= 300) return ['Muy mala', 'vbad'];
+  return ['Peligrosa', 'haz'];
+}
+function uvBand(uv) {
+  if (uv < 3) return ['bajo', 'good'];
+  if (uv < 6) return ['moderado', 'mod'];
+  if (uv < 8) return ['alto', 'usg'];
+  if (uv < 11) return ['muy alto', 'bad'];
+  return ['extremo', 'vbad'];
+}
+function airDetailHtml(air) {
+  if (!air || (air.aqi == null && air.uv == null)) return '';
+  const bits = [];
+  if (air.aqi != null) {
+    const [label, cls] = aqiBand(air.aqi);
+    bits.push(`Aire <b class="air-${cls}" title="US AQI ${air.aqi}${air.pm25 != null ? ` · PM2.5 ${air.pm25} µg/m³` : ''}">${air.aqi} ${label}</b>`);
+  }
+  if (air.uv != null) {
+    const [label, cls] = uvBand(air.uv);
+    bits.push(`UV <b class="air-${cls}">${Math.round(air.uv * 10) / 10} ${label}</b>`);
+  }
+  return `<div class="weather-detail">${bits.join(' · ')}</div>`;
 }
 
 function escapeHtml(s) {
@@ -375,21 +430,20 @@ function renderMarkets(m) {
       </div>`;
   }).join('');
 
+  // Dos columnas de la grilla de 3 (la 3ª, Acciones, la pinta renderStocks).
   el.innerHTML = `
-    <div class="mkt-cols">
-      <div class="mkt-col">
-        <div class="mkt-sub-title">Cripto <span class="mkt-src">· USD</span></div>
-        <div class="mkt-list">${cryptoHtml}</div>
+    <div class="mkt-col">
+      <div class="mkt-sub-title">Cripto <span class="mkt-src">· USD</span></div>
+      <div class="mkt-list">${cryptoHtml}</div>
+    </div>
+    <div class="mkt-col mkt-col-sep">
+      <div class="mkt-sub-title">Divisas <span class="mkt-src">· UYU</span></div>
+      <div class="mkt-fx-row mkt-fx-head">
+        <span class="mkt-fx-cur"></span>
+        <span class="mkt-fx-cell">DolarAPI</span>
+        <span class="mkt-fx-cell">Exch.Rate</span>
       </div>
-      <div class="mkt-col">
-        <div class="mkt-sub-title">Divisas <span class="mkt-src">· 1 = UYU</span></div>
-        <div class="mkt-fx-row mkt-fx-head">
-          <span class="mkt-fx-cur"></span>
-          <span class="mkt-fx-cell">DolarAPI</span>
-          <span class="mkt-fx-cell">ExchangeRate</span>
-        </div>
-        <div class="mkt-list">${fxRows}</div>
-      </div>
+      <div class="mkt-list">${fxRows}</div>
     </div>`;
   adjustWindowSize();
 }
@@ -435,13 +489,131 @@ async function refreshMarkets() {
 const mktRefreshBtn = $('mkt-refresh');
 if (mktRefreshBtn) mktRefreshBtn.addEventListener('click', refreshMarkets);
 
+// ── Acciones y ETFs (Finnhub) — bloque dentro del card Mercado ──
+// Necesita key "Finnhub" en API Keys; sin key el bloque muestra el hint.
+// Los símbolos viven en config.json y se editan inline con el lápiz.
+let stocksEditing = false;
+let stocksLast = null;
+
+function fmtStockPrice(v) {
+  if (v == null || !isFinite(v)) return '—';
+  return '$' + v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+function renderStocks(r) {
+  const el = $('stocks-block');
+  if (!el) return;
+  stocksLast = r;
+  if (r && r.error === 'sin key') {
+    el.innerHTML = `
+      <div class="mkt-col mkt-col-sep">
+        <div class="mkt-sub-title">Acciones y ETFs <span class="mkt-src">· Finnhub</span></div>
+        <div class="stocks-hint">Agregá una key llamada <code>Finnhub</code> en API Keys (gratis en finnhub.io) para ver cotizaciones acá.</div>
+      </div>`;
+    adjustWindowSize();
+    return;
+  }
+  if (!r || r.error) {
+    el.innerHTML = `
+      <div class="mkt-col mkt-col-sep">
+        <div class="mkt-sub-title">Acciones y ETFs <span class="mkt-src">· Finnhub</span></div>
+        <div class="mkt-empty">No disponible${r && r.error ? ` (${escapeHtml(r.error)})` : ''}</div>
+      </div>`;
+    adjustWindowSize();
+    return;
+  }
+  const quotes = Array.isArray(r.quotes) ? r.quotes : [];
+  el.innerHTML = `
+    <div class="mkt-col mkt-col-sep">
+      <div class="mkt-sub-title stocks-title">
+        Acciones y ETFs <span class="mkt-src">· USD</span>
+        <button class="key-icon-btn js-stocks-edit" title="Editar símbolos">✎</button>
+      </div>
+      ${stocksEditing ? `
+        <div class="stocks-edit-row">
+          <input id="stocks-symbols" class="fin-input" value="${escapeHtml((r.symbols || []).join(', '))}"
+            placeholder="Símbolos separados por coma (ej. AAPL, SPY, VOO)" autocomplete="off">
+          <button class="fin-btn js-stocks-save">Guardar</button>
+        </div>` : ''}
+      <div class="mkt-list">
+        ${quotes.map((q) => `
+          <div class="mkt-coin">
+            <span class="mkt-coin-sym">${escapeHtml(q.symbol)}</span>
+            <span class="mkt-coin-price">${fmtStockPrice(q.price)}</span>
+            ${q.price != null ? fmtChange(q.changePct) : '<span class="mkt-chg">—</span>'}
+          </div>`).join('')}
+      </div>
+    </div>`;
+  const editBtn = el.querySelector('.js-stocks-edit');
+  if (editBtn) editBtn.addEventListener('click', () => {
+    stocksEditing = !stocksEditing;
+    renderStocks(stocksLast);
+  });
+  const saveBtn = el.querySelector('.js-stocks-save');
+  if (saveBtn) saveBtn.addEventListener('click', async () => {
+    const input = $('stocks-symbols');
+    const symbols = (input ? input.value : '').split(',').map((s) => s.trim()).filter(Boolean);
+    saveBtn.disabled = true;
+    try { await window.api.stocks.setSymbols(symbols); } catch {}
+    stocksEditing = false;
+    refreshStocks();
+  });
+  const inputEl = $('stocks-symbols');
+  if (inputEl) inputEl.addEventListener('keydown', (e) => { if (e.key === 'Enter' && saveBtn) saveBtn.click(); });
+  adjustWindowSize();
+}
+
+async function refreshStocks() {
+  try {
+    renderStocks(await window.api.stocks.quotes());
+  } catch (e) {
+    renderStocks({ error: String(e && e.message || e) });
+  }
+}
+
+// ── Próximos feriados de Uruguay (Nager.Date, dashboard) ───────
+// Mini cards en una sola fila con scroll horizontal si son muchos. El card
+// queda oculto si la API no responde (no aporta nada vacío).
+function holidayCountdown(ts) {
+  const days = Math.round((ts - Date.now()) / 86400000);
+  if (days <= 0) return ['¡hoy!', 'today'];
+  if (days === 1) return ['mañana', 'soon'];
+  if (days <= 7) return [`en ${days} días`, 'soon'];
+  return [`en ${days} días`, ''];
+}
+
+async function refreshHolidays() {
+  const card = $('holidays-card'), list = $('holidays-list');
+  if (!card || !list) return;
+  let r = null;
+  try { r = await window.api.holidays.next(); } catch {}
+  const holidays = (r && !r.error && Array.isArray(r.holidays)) ? r.holidays : [];
+  if (!holidays.length) { card.hidden = true; adjustWindowSize(); return; }
+  card.hidden = false;
+  list.innerHTML = holidays.map((h) => {
+    const d = new Date(h.ts);
+    const [cd, cls] = holidayCountdown(h.ts);
+    return `
+      <div class="holiday-card" title="${escapeHtml(h.name)}">
+        <div class="holiday-card-top">
+          <span class="holiday-card-date">${d.toLocaleDateString('es-UY', { weekday: 'short', day: '2-digit', month: 'short' })}</span>
+          <span class="holiday-card-count ${cls}">${cd}</span>
+        </div>
+        <div class="holiday-card-name">${escapeHtml(h.name)}</div>
+      </div>`;
+  }).join('');
+  adjustWindowSize();
+}
+
 // ── YIFY torrents ──────────────────────────────────────────────
 // La API es un mirror comunitario y puede morir en cualquier momento: al
 // iniciar corre un health check (yify.check). Si falla, el card del dashboard
 // se oculta y el tab muestra "API caída" con un botón de reintento — nunca
 // rompe el resto del widget.
 const YIFY_INTERVAL_MS = 30 * 60 * 1000;   // últimas películas: cada 30 min
-const YIFY_DASH_COUNT = 6;
+const YIFY_DASH_COUNT = 4;   // 1 fila de 4 películas en el dashboard
+const EZ_DASH_COUNT = 4;     // 1 fila de 4 series
+let ezDashShows = [];      // últimas series agrupadas para la mitad derecha del card
 // Ítems por página según la vista (la API acepta hasta 50): las tarjetas son
 // grandes (12), los iconos chicos llenan 5 filas de 8 (40), la lista 20 films.
 const YIFY_PAGE_SIZES = { grid: 12, icons: 40, list: 20 };
@@ -454,6 +626,10 @@ let yifyView = 'grid';    // vista del tab: 'grid' (tarjetas) | 'icons' | 'list'
 try { yifyView = localStorage.getItem('yifyView') || 'grid'; } catch {}
 let yifyFetching = false;
 let yifyTimerStarted = false;
+// Favoritos: viven completos en SQLite (portada incluida) así sobreviven a la
+// muerte de la API. favIds pinta los corazones; yifyFavsMode es la sección ♥.
+let yifyFavsMode = false;
+let favIds = new Set();
 
 function setYifyStatus(kind, text) {
   const wrap = $('yify-status'), txt = $('yify-status-text');
@@ -470,31 +646,103 @@ function yifyMeta(m) {
   return bits.join(' · ');
 }
 
+// Corazón de like, compartido por las tres vistas. `mini` es la variante
+// inline de la vista lista (las otras dos lo superponen sobre el poster).
+function yifyFavHtml(m, i, mini = false) {
+  const on = favIds.has(m.id);
+  return `<button class="yify-fav-btn${mini ? ' yify-fav-mini' : ''}${on ? ' faved' : ''} js-yify-fav" data-i="${i}"
+    title="${on ? 'Quitar de favoritos' : 'Guardar en favoritos'}">${on ? '♥' : '♡'}</button>`;
+}
+
+// Alta/baja del favorito y refresco de la vista actual para repintar los
+// corazones. El alta es lenta (main baja la portada y la ficha completa para
+// guardarlas en la base): el botón queda deshabilitado mientras tanto.
+async function toggleYifyFav(m) {
+  if (!m || !m.id) return;
+  try {
+    if (favIds.has(m.id)) {
+      const r = await window.api.favs.remove(m.id);
+      if (r && r.ok) favIds.delete(m.id);
+    } else {
+      const r = await window.api.favs.add(m);
+      if (r && r.ok) favIds.add(m.id);
+    }
+  } catch {}
+  if (yifyFavsMode) loadYifyFavs();
+  else if (yifyShown.length) renderYifyMovies(yifyShown);
+}
+
+// El card de "Últimos estrenos" se muestra si hay pelis O series; cada mitad
+// se renderiza por separado (APIs distintas, refrescos independientes).
+function updateDashMediaCard() {
+  const card = $('yify-dash-card');
+  if (!card) return;
+  const hasMovies = yifyOk && yifyLatest && Array.isArray(yifyLatest.movies) && yifyLatest.movies.length;
+  const hasSeries = ezDashShows.length;
+  card.hidden = !(hasMovies || hasSeries);
+}
+
 function renderYifyDash() {
-  const card = $('yify-dash-card'), grid = $('yify-dash');
-  if (!card || !grid) return;
+  const grid = $('yify-dash');
+  if (!grid) return;
   const movies = (yifyOk && yifyLatest && Array.isArray(yifyLatest.movies)) ? yifyLatest.movies : [];
-  if (!movies.length) { card.hidden = true; adjustWindowSize(); return; }
-  card.hidden = false;
   const whenEl = $('yify-dash-when');
-  if (whenEl) whenEl.textContent = yifyLatest.fetchedAt ? fmtWhen(yifyLatest.fetchedAt) : '';
-  grid.innerHTML = movies.slice(0, YIFY_DASH_COUNT).map((m) => `
-    <div class="yify-dash-cell" data-id="${m.id}" title="${escapeHtml(m.title)}${m.year ? ` (${m.year})` : ''} — ver ficha">
-      ${m.cover
-        ? `<img class="yify-poster" src="${escapeHtml(m.cover)}" loading="lazy" alt="">`
-        : `<div class="yify-poster yify-noposter">🎬</div>`}
-      <div class="yify-dash-title">${escapeHtml(m.title)}</div>
-      <div class="yify-dash-meta">${escapeHtml(yifyMeta(m))}</div>
-    </div>`).join('');
+  if (whenEl && yifyLatest && yifyLatest.fetchedAt) whenEl.textContent = fmtWhen(yifyLatest.fetchedAt);
+  grid.innerHTML = movies.length
+    ? movies.slice(0, YIFY_DASH_COUNT).map((m) => `
+      <div class="yify-dash-cell" data-id="${m.id}" title="${escapeHtml(m.title)}${m.year ? ` (${m.year})` : ''} — ver ficha">
+        ${m.cover
+          ? `<img class="yify-poster" src="${escapeHtml(m.cover)}" loading="lazy" alt="">`
+          : `<div class="yify-poster yify-noposter">🎬</div>`}
+        <div class="yify-dash-title">${escapeHtml(m.title)}</div>
+        <div class="yify-dash-meta">${escapeHtml(yifyMeta(m))}</div>
+      </div>`).join('')
+    : `<div class="dash-media-empty">${yifyOk ? 'Sin novedades' : 'API caída'}</div>`;
   grid.querySelectorAll('.yify-dash-cell').forEach((c) => {
     c.addEventListener('click', () => openYifyModal(+c.dataset.id));
   });
+  updateDashMediaCard();
   adjustWindowSize();
+}
+
+// Mitad derecha: últimas series agrupadas (mismo fetch que el tab Series).
+// Click → modal de la serie (subidos recientes + todos los episodios).
+function renderEztvDash() {
+  const grid = $('ez-dash');
+  if (!grid) return;
+  grid.innerHTML = ezDashShows.length
+    ? ezDashShows.slice(0, EZ_DASH_COUNT).map((g, i) => `
+      <div class="yify-dash-cell ez-dash-cell" data-i="${i}"
+        title="${escapeHtml(g.title)}${g.year ? ` (${g.year})` : ''}${g.episodes && g.episodes.length > 1 ? ` · ${g.episodes.length} eps` : ''} — ver episodios">
+        ${g.image
+          ? `<img class="yify-poster" src="${escapeHtml(g.image)}" loading="lazy" alt="">`
+          : `<div class="yify-poster yify-noposter">📺</div>`}
+        ${g.episodes && g.episodes.length > 1 ? `<span class="ez-ep-count">${g.episodes.length}</span>` : ''}
+        <div class="yify-dash-title">${escapeHtml(g.title)}</div>
+        <div class="yify-dash-meta">${escapeHtml(ezCardMeta(g))}</div>
+      </div>`).join('')
+    : `<div class="dash-media-empty">${ezOk === false ? 'API caída' : 'Cargando…'}</div>`;
+  grid.querySelectorAll('.ez-dash-cell').forEach((c) => {
+    c.addEventListener('click', () => openEzShowModal(ezDashShows[+c.dataset.i]));
+  });
+  updateDashMediaCard();
+  adjustWindowSize();
+}
+
+async function refreshEztvDash() {
+  try {
+    const r = await window.api.eztv.shows({ limit: 24, page: 1 });
+    if (r && !r.error && Array.isArray(r.shows)) {
+      ezDashShows = r.shows;
+      renderEztvDash();
+    }
+  } catch {}
 }
 
 function renderYifyDown(err) {
   const el = $('yify-list');
   if (!el) return;
+  if (yifyFavsMode) return;   // los favoritos viven en la base: API caída no los pisa
   el.className = 'yify-grid';
   const pager = $('yify-pager');
   if (pager) pager.innerHTML = '';
@@ -508,12 +756,15 @@ function renderYifyDown(err) {
   adjustWindowSize();
 }
 
-// Clicks compartidos por las tres vistas: ficha (js-yify-open) y magnet.
+// Clicks compartidos por las tres vistas: ficha (js-yify-open), magnet y ♥.
+// En Favoritos la ficha se arma con los datos guardados (no toca la API).
 function attachYifyClickHandlers(el) {
   el.querySelectorAll('.js-yify-open').forEach((n) => {
     n.addEventListener('click', () => {
       const m = yifyShown[+n.dataset.i];
-      if (m) openYifyModal(m.id);
+      if (!m) return;
+      if (yifyFavsMode) openFavModal(m);
+      else openYifyModal(m.id);
     });
   });
   el.querySelectorAll('.js-yify-magnet').forEach((b) => {
@@ -522,6 +773,16 @@ function attachYifyClickHandlers(el) {
       const t = m && m.torrents ? m.torrents[+b.dataset.t] : null;
       const link = t && (t.magnet || t.url);
       if (link) window.api.openExternal(link);
+    });
+  });
+  el.querySelectorAll('.js-yify-fav').forEach((b) => {
+    b.addEventListener('click', async (e) => {
+      e.stopPropagation();   // el padre abre la ficha
+      const m = yifyShown[+b.dataset.i];
+      if (!m || b.disabled) return;
+      b.disabled = true;
+      b.textContent = '…';
+      await toggleYifyFav(m);   // re-renderiza la vista (el botón se descarta)
     });
   });
 }
@@ -536,6 +797,7 @@ function renderYifyCards(el) {
           ? `<img class="yify-poster" src="${escapeHtml(m.cover)}" loading="lazy" alt="">`
           : `<div class="yify-poster yify-noposter">🎬</div>`}
         ${m.rating ? `<span class="yify-rating">★ ${m.rating}</span>` : ''}
+        ${yifyFavHtml(m, i)}
       </div>
       <div class="yify-info">
         <div class="yify-title js-yify-open" data-i="${i}" title="${escapeHtml(m.title)}">${escapeHtml(m.title)}</div>
@@ -561,6 +823,7 @@ function renderYifyIcons(el) {
       ${m.cover
         ? `<img class="yify-poster" src="${escapeHtml(m.cover)}" loading="lazy" alt="">`
         : `<div class="yify-poster yify-noposter">🎬</div>`}
+      ${yifyFavHtml(m, i)}
       <div class="yify-dash-title">${escapeHtml(m.title)}</div>
       <div class="yify-dash-meta">${escapeHtml(yifyMeta(m))}</div>
     </div>`).join('');
@@ -576,7 +839,7 @@ function renderYifyTable(el) {
     ts.forEach((t, ti) => {
       rows.push(`
         <div class="yify-tr">
-          <span class="yify-td-title js-yify-open" data-i="${i}" title="${escapeHtml(m.title)} — ver ficha">${escapeHtml(m.title)}</span>
+          <span class="yify-td-title js-yify-open" data-i="${i}" title="${escapeHtml(m.title)} — ver ficha">${ti === 0 ? yifyFavHtml(m, i, true) : ''}${escapeHtml(m.title)}</span>
           <span class="yify-td-num">${m.year ?? '—'}</span>
           <span class="yify-td-num yify-td-rating">${m.rating ? '★ ' + m.rating : '—'}</span>
           <span class="yify-td-qual">${t ? escapeHtml(t.quality + (t.type ? ' · ' + t.type : '')) : '—'}</span>
@@ -647,7 +910,7 @@ async function refreshYifyLatest() {
       const filtersDefault = yifyPage === 1 && !v('yify-search').trim() && !v('yify-genre') &&
         !v('yify-quality') && (v('yify-minrating') === '0' || !v('yify-minrating')) &&
         (v('yify-sort') === 'date_added' || !v('yify-sort'));
-      if (filtersDefault) {
+      if (filtersDefault && !yifyFavsMode) {
         renderYifyMovies(r.movies);
         renderYifyPager(r.count);
       }
@@ -711,6 +974,49 @@ async function loadYifyList() {
 
 function yifySearchNew() { yifyPage = 1; loadYifyList(); }
 
+// ── Sección Favoritos ─────────────────────────────────────────
+// Lee la base local y reusa las mismas vistas (grid/iconos/lista). No depende
+// de la API en absoluto: portada (data URL), ficha y magnets salen de SQLite.
+async function loadYifyFavs() {
+  const el = $('yify-list');
+  const pager = $('yify-pager');
+  if (pager) pager.innerHTML = '';
+  if (el) { el.className = 'yify-grid'; el.innerHTML = `<div class="ai-loading">Cargando favoritos…</div>`; }
+  let favs = [];
+  try {
+    const r = await window.api.favs.list();
+    if (Array.isArray(r)) favs = r;
+  } catch {}
+  if (!yifyFavsMode) return;   // salieron de la sección mientras cargaba
+  favIds = new Set(favs.map((f) => f.id));
+  if (!favs.length) {
+    if (el) {
+      el.className = 'yify-grid';
+      el.innerHTML = `<div class="ai-loading">Sin favoritos todavía — tocá ♡ en una película para guardarla acá.</div>`;
+    }
+    adjustWindowSize();
+    return;
+  }
+  renderYifyMovies(favs);
+}
+
+function setYifyFavsMode(on) {
+  yifyFavsMode = !!on;
+  const btn = $('yify-favs-btn');
+  if (btn) btn.classList.toggle('active', yifyFavsMode);
+  // La búsqueda y los filtros le pegan a la API: se ocultan en Favoritos
+  // (el toggle de vista sí aplica, queda visible).
+  ['yify-search', 'yify-search-btn'].forEach((id) => {
+    const n = $(id);
+    if (n) n.style.display = yifyFavsMode ? 'none' : '';
+  });
+  const filters = document.querySelector('#tab-torrents .yify-filters');
+  if (filters) filters.style.display = yifyFavsMode ? 'none' : '';
+  if (yifyFavsMode) loadYifyFavs();
+  else if (yifyOk) loadYifyList();
+  else initYify();
+}
+
 // ── Ficha de película (modal): movie_details + movie_suggestions ──
 let yifyModalEl = null;
 function closeYifyModal() {
@@ -743,6 +1049,16 @@ async function openYifyModal(movieId) {
 
   const box = overlay.querySelector('.yify-modal-box');
   if (!det || det.error) {
+    // API caída pero la película es favorita: la ficha sale de la base local.
+    if (favIds.has(movieId)) {
+      try {
+        const favs = await window.api.favs.list();
+        const f = Array.isArray(favs) ? favs.find((x) => x.id === movieId) : null;
+        if (yifyModalEl !== overlay) return;
+        if (f) { fillYifyModal(box, f, []); return; }
+      } catch {}
+      if (yifyModalEl !== overlay) return;
+    }
     box.innerHTML = `
       <div class="yify-down-msg">⚠️ No se pudo cargar la ficha${det && det.error ? ` <span class="yify-down-err">(${escapeHtml(det.error)})</span>` : ''}</div>
       <div class="fin-modal-actions"><button class="fin-btn js-yify-x">Cerrar</button></div>`;
@@ -750,8 +1066,25 @@ async function openYifyModal(movieId) {
     return;
   }
 
-  const m = det;
   const sugMovies = (sug && !sug.error && Array.isArray(sug.movies)) ? sug.movies : [];
+  fillYifyModal(box, det, sugMovies);
+}
+
+// Ficha 100% offline para favoritos: datos, magnets y portada desde SQLite.
+function openFavModal(m) {
+  closeYifyModal();
+  const overlay = document.createElement('div');
+  overlay.className = 'fin-modal';
+  overlay.innerHTML = `<div class="fin-modal-box yify-modal-box"></div>`;
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) closeYifyModal(); });
+  document.addEventListener('keydown', yifyModalEsc);
+  document.body.appendChild(overlay);
+  yifyModalEl = overlay;
+  fillYifyModal(overlay.querySelector('.yify-modal-box'), m, []);
+}
+
+// Cuerpo + wiring de la ficha, compartido entre la versión API y la offline.
+function fillYifyModal(box, m, sugMovies) {
   box.innerHTML = `
     <div class="fin-exp-modal-head">
       <span class="fin-exp-modal-title">${escapeHtml(m.title)}${m.year ? ` (${m.year})` : ''}</span>
@@ -765,6 +1098,7 @@ async function openYifyModal(movieId) {
         <div class="yify-meta">${escapeHtml(yifyMeta(m))}</div>
         ${m.genres && m.genres.length ? `<div class="yify-genres">${escapeHtml(m.genres.join(' · '))}</div>` : ''}
         <div class="yify-modal-actions-row">
+          <button class="fin-btn yify-fav-action js-yify-modal-fav${favIds.has(m.id) ? ' faved' : ''}">${favIds.has(m.id) ? '♥ En favoritos' : '♡ Guardar en favoritos'}</button>
           ${m.trailer ? `<button class="fin-btn js-yify-link" data-url="${escapeHtml(m.trailer)}">▶ Trailer</button>` : ''}
           ${m.url ? `<button class="fin-btn js-yify-link" data-url="${escapeHtml(m.url)}">Ver en YTS ↗</button>` : ''}
         </div>
@@ -797,6 +1131,17 @@ async function openYifyModal(movieId) {
       </div>` : ''}`;
 
   box.querySelector('.js-yify-x').addEventListener('click', closeYifyModal);
+  const favBtn = box.querySelector('.js-yify-modal-fav');
+  if (favBtn) favBtn.addEventListener('click', async () => {
+    if (favBtn.disabled) return;
+    favBtn.disabled = true;
+    favBtn.textContent = favIds.has(m.id) ? 'Quitando…' : 'Guardando…';
+    await toggleYifyFav(m);
+    favBtn.disabled = false;
+    const on = favIds.has(m.id);
+    favBtn.classList.toggle('faved', on);
+    favBtn.textContent = on ? '♥ En favoritos' : '♡ Guardar en favoritos';
+  });
   box.querySelectorAll('.js-yify-link').forEach((b) => {
     b.addEventListener('click', () => { if (b.dataset.url) window.api.openExternal(b.dataset.url); });
   });
@@ -835,7 +1180,11 @@ async function initYify() {
 const yifySearchBtn = $('yify-search-btn');
 if (yifySearchBtn) yifySearchBtn.addEventListener('click', yifySearchNew);
 const yifySearchInput = $('yify-search');
-if (yifySearchInput) yifySearchInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') yifySearchNew(); });
+if (yifySearchInput) {
+  yifySearchInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') yifySearchNew(); });
+  // Búsqueda en vivo: filtra mientras se escribe; al limpiar vuelve al listado.
+  yifySearchInput.addEventListener('input', debounce(yifySearchNew, 400));
+}
 ['yify-sort', 'yify-genre', 'yify-quality', 'yify-minrating'].forEach((id) => {
   const sel = $(id);
   if (sel) sel.addEventListener('change', yifySearchNew);
@@ -850,6 +1199,8 @@ function setYifyView(view) {
   document.querySelectorAll('#yify-view-toggle .yify-view-btn').forEach((b) => {
     b.classList.toggle('active', b.dataset.view === view);
   });
+  // Favoritos no pagina: alcanza con re-renderizar lo ya cargado.
+  if (yifyFavsMode) { if (yifyShown.length) renderYifyMovies(yifyShown); return; }
   const newSize = yifyPageSize();
   if (newSize === oldSize) {
     if (yifyShown.length) renderYifyMovies(yifyShown);
@@ -867,9 +1218,1114 @@ document.querySelectorAll('#yify-view-toggle .yify-view-btn').forEach((b) => {
   b.addEventListener('click', () => setYifyView(b.dataset.view));
 });
 const yifyRefreshBtn = $('yify-refresh');
-if (yifyRefreshBtn) yifyRefreshBtn.addEventListener('click', () => { yifyOk ? loadYifyList() : initYify(); });
+if (yifyRefreshBtn) yifyRefreshBtn.addEventListener('click', () => {
+  if (yifyFavsMode) loadYifyFavs();
+  else if (yifyOk) loadYifyList();
+  else initYify();
+});
 const yifyDashRefreshBtn = $('yify-dash-refresh');
-if (yifyDashRefreshBtn) yifyDashRefreshBtn.addEventListener('click', refreshYifyLatest);
+if (yifyDashRefreshBtn) yifyDashRefreshBtn.addEventListener('click', () => { refreshYifyLatest(); refreshEztvDash(); });
+const yifyFavsBtn = $('yify-favs-btn');
+if (yifyFavsBtn) yifyFavsBtn.addEventListener('click', () => setYifyFavsMode(!yifyFavsMode));
+// Ids de favoritos al arrancar, para pintar los ♥ sobre lo ya renderizado.
+window.api.favs.ids().then((ids) => {
+  favIds = new Set(Array.isArray(ids) ? ids : []);
+  if (!yifyFavsMode && yifyShown.length) renderYifyMovies(yifyShown);
+}).catch(() => {});
+
+// ── EZTV series (tab Torrents Series) ──────────────────────────
+// La vista principal son cards por serie (como Films): main agrupa la página
+// de torrents por imdb_id / nombre y la enriquece con el poster de IMDb
+// (eztv:shows). El click abre el modal de la serie: episodios recién subidos
+// + búsqueda de todos los demás por imdb_id. La búsqueda por nombre va contra
+// la suggestion API de IMDb (chips) y también abre el modal. Favoritos =
+// episodios guardados completos en la base (imagen + magnet links).
+const EZ_PAGE_SIZE = 50;     // torrents por página de la API (se apilan por serie)
+const EZ_MODAL_PAGE = 50;    // episodios por tanda en "Todos los episodios"
+let ezOk = null;          // null = verificando; resultado del health check
+let ezGroups = [];        // cards de series renderizadas (para los clicks)
+let ezShown = [];         // filas de Favoritos renderizadas
+let ezPage = 1;
+let ezFavsMode = false;
+let ezFavIds = new Set();
+
+function setEzStatus(kind, text) {
+  const wrap = $('ez-status'), txt = $('ez-status-text');
+  if (!wrap || !txt) return;
+  wrap.className = 'db-status' + (kind ? ` ${kind}` : '');
+  txt.textContent = text;
+}
+
+function ezEpTag(t) {
+  const s = t.season ? `S${String(t.season).padStart(2, '0')}` : '';
+  const e = t.episode ? `E${String(t.episode).padStart(2, '0')}` : '';
+  return (s + e) || '—';
+}
+
+function ezDate(ts) {
+  if (!ts) return '—';
+  return new Date(ts).toLocaleDateString('es-UY', { day: '2-digit', month: '2-digit', year: '2-digit' });
+}
+
+function ezFavHtml(t, i) {
+  const on = ezFavIds.has(t.id);
+  return `<button class="yify-fav-btn yify-fav-mini${on ? ' faved' : ''} js-ez-fav" data-i="${i}"
+    title="${on ? 'Quitar de favoritos' : 'Guardar en favoritos'}">${on ? '♥' : '♡'}</button>`;
+}
+
+function renderEzDown(err) {
+  if (ezFavsMode) return;   // los favoritos viven en la base: API caída no los pisa
+  const el = $('ez-list');
+  if (!el) return;
+  el.className = 'yify-table';
+  const pager = $('ez-pager');
+  if (pager) pager.innerHTML = '';
+  el.innerHTML = `
+    <div class="yify-down">
+      <div class="yify-down-msg">⚠️ La API de EZTV no responde${err ? ` <span class="yify-down-err">(${escapeHtml(err)})</span>` : ''}</div>
+      <button id="ez-retry" class="fin-btn">Reintentar</button>
+    </div>`;
+  const btn = $('ez-retry');
+  if (btn) btn.addEventListener('click', initEztv);
+  adjustWindowSize();
+}
+
+function markEzDown(err) {
+  ezOk = false;
+  setEzStatus('disconnected', 'API caída');
+  renderEzDown(err);
+}
+
+// Filas tracker: ♥, episodio, S·E, calidad, tamaño, seeds, leech, fecha, 🧲.
+// HTML + wiring separados para reusarlos en Favoritos y en las dos secciones
+// del modal de serie (cada contenedor con su propio array de torrents).
+function ezEpRowsHtml(torrents) {
+  return `
+    <div class="yify-tr yify-tr-head ez-tr">
+      <span></span>
+      <span>Episodio</span>
+      <span class="yify-td-num">S·E</span>
+      <span>Calidad</span>
+      <span class="yify-td-num">Tamaño</span>
+      <span class="yify-td-num" title="Seeders">Seeds</span>
+      <span class="yify-td-num" title="Leechers">Leech</span>
+      <span class="yify-td-num">Fecha</span>
+      <span></span>
+    </div>` + torrents.map((t, i) => `
+    <div class="yify-tr ez-tr">
+      <span class="ez-td-fav">${ezFavHtml(t, i)}</span>
+      <span class="yify-td-title ez-td-title" title="${escapeHtml(t.filename || t.title)}">${escapeHtml(t.title)}</span>
+      <span class="yify-td-num">${ezEpTag(t)}</span>
+      <span class="yify-td-qual">${t.quality ? escapeHtml(t.quality) : '—'}</span>
+      <span class="yify-td-num">${t.size ? escapeHtml(t.size) : '—'}</span>
+      <span class="yify-td-num yify-td-seeds">${t.seeds != null ? t.seeds : '—'}</span>
+      <span class="yify-td-num yify-td-peers">${t.peers != null ? t.peers : '—'}</span>
+      <span class="yify-td-num">${ezDate(t.releasedAt)}</span>
+      <span class="yify-td-mag">${t.magnet ? `
+        <button class="yify-q yify-q-mini js-ez-magnet" data-i="${i}"
+          title="Magnet${t.quality ? ` ${escapeHtml(t.quality)}` : ''}${t.size ? ` · ${escapeHtml(t.size)}` : ''}">🧲</button>` : ''}</span>
+    </div>`).join('');
+}
+
+// Clicks de las filas (scope = contenedor). showCtx aporta nombre + poster de
+// la serie al guardar un favorito desde el modal.
+function wireEzRows(container, torrents, showCtx) {
+  container.querySelectorAll('.js-ez-magnet').forEach((b) => {
+    b.addEventListener('click', () => {
+      const t = torrents[+b.dataset.i];
+      if (t && t.magnet) window.api.openExternal(t.magnet);
+    });
+  });
+  container.querySelectorAll('.js-ez-fav').forEach((b) => {
+    b.addEventListener('click', async () => {
+      const t = torrents[+b.dataset.i];
+      if (!t || b.disabled) return;
+      b.disabled = true;
+      b.textContent = '…';
+      await ezToggleFav(t, showCtx);
+      const on = ezFavIds.has(t.id);
+      b.disabled = false;
+      b.textContent = on ? '♥' : '♡';
+      b.classList.toggle('faved', on);
+      b.title = on ? 'Quitar de favoritos' : 'Guardar en favoritos';
+      if (ezFavsMode) loadEzFavs();   // en Favoritos la baja saca la fila
+    });
+  });
+}
+
+// Tabla de la sección Favoritos (datos de la base).
+function renderEzRows(torrents) {
+  const el = $('ez-list');
+  if (!el) return;
+  el.className = 'yify-table';
+  ezShown = Array.isArray(torrents) ? torrents : [];
+  if (!ezShown.length) {
+    el.innerHTML = `<div class="ai-loading">${ezFavsMode
+      ? 'Sin favoritos todavía — tocá ♡ en un episodio para guardarlo acá.'
+      : 'Sin resultados'}</div>`;
+    adjustWindowSize();
+    return;
+  }
+  el.innerHTML = ezEpRowsHtml(ezShown);
+  wireEzRows(el, ezShown, null);
+  adjustWindowSize();
+}
+
+// Alta/baja del episodio favorito. El alta adjunta el contexto de la serie
+// (nombre + poster de IMDb) cuando lo hay; main baja la imagen y guarda todo
+// en la base (Mongo + espejo SQLite).
+async function ezToggleFav(t, showCtx) {
+  if (!t || !t.id) return;
+  try {
+    if (ezFavIds.has(t.id)) {
+      const r = await window.api.sfavs.remove(t.id);
+      if (r && r.ok) ezFavIds.delete(t.id);
+    } else {
+      const payload = {
+        ...t,
+        showTitle: t.showTitle || (showCtx && showCtx.title) || null,
+        showImage: (showCtx && showCtx.image) || null,
+      };
+      const r = await window.api.sfavs.add(payload);
+      if (r && r.ok) ezFavIds.add(t.id);
+    }
+  } catch {}
+  refreshTvmaze();   // los próximos episodios salen de los favoritos
+}
+
+// Bloque TMDB del modal de serie: sinopsis en español, rating, géneros y
+// "dónde ver" (streamings de UY). Falla suave: sin key/ficha no aparece nada.
+async function fillEzTmdb(overlay, imdbNum) {
+  let f = null;
+  try { f = await window.api.tmdb.tv(imdbNum); } catch {}
+  if (ezModalEl !== overlay) return;   // la cerraron mientras cargaba
+  const box = overlay.querySelector('#ez-modal-tmdb');
+  if (!box || !f || f.error) return;
+  const metaBits = [];
+  if (f.rating) metaBits.push(`★ ${f.rating}${f.votes ? ` (${f.votes.toLocaleString('es-UY')})` : ''}`);
+  if (f.seasons) metaBits.push(`${f.seasons} temporada${f.seasons > 1 ? 's' : ''}`);
+  if (f.episodes) metaBits.push(`${f.episodes} episodios`);
+  if (f.firstAir) metaBits.push(f.firstAir.slice(0, 4) + (f.inProduction ? '–' : f.lastAir ? `–${f.lastAir.slice(0, 4)}` : ''));
+  box.innerHTML = `
+    <div class="ez-tmdb">
+      <div class="yify-meta">${escapeHtml(metaBits.join(' · '))}${f.genres.length ? ` <span class="yify-genres">· ${escapeHtml(f.genres.join(' · '))}</span>` : ''}</div>
+      ${f.overview ? `<div class="ez-tmdb-overview">${escapeHtml(f.overview)}</div>` : ''}
+      ${f.providers.length ? `
+        <div class="ez-tmdb-prov">
+          <span class="ez-tmdb-prov-label">Ver en</span>
+          ${f.providers.map((p) => `
+            ${p.logo ? `<img class="ez-tmdb-prov-logo" src="${escapeHtml(p.logo)}" title="${escapeHtml(p.name)}" alt="${escapeHtml(p.name)}">`
+              : `<span class="ez-tmdb-prov-name">${escapeHtml(p.name)}</span>`}`).join('')}
+          ${f.providersLink ? `<button class="rd-ext js-ez-tmdb-link">↗ opciones</button>` : ''}
+        </div>` : ''}
+    </div>`;
+  const link = box.querySelector('.js-ez-tmdb-link');
+  if (link) link.addEventListener('click', () => window.api.openExternal(f.providersLink));
+  box.dataset.src = 'tmdb';
+}
+
+// ── Cards de series (vista recientes, como Films) ──────────────
+function ezCardMeta(g) {
+  const bits = [];
+  const last = g.episodes && g.episodes[0];
+  if (last) bits.push(ezEpTag(last));
+  if (g.latestAt) bits.push(ezDate(g.latestAt));
+  return bits.join(' · ');
+}
+
+function renderEzShows(groups) {
+  const el = $('ez-list');
+  if (!el) return;
+  ezGroups = Array.isArray(groups) ? groups : [];
+  if (!ezGroups.length) {
+    el.className = 'yify-table';
+    el.innerHTML = `<div class="ai-loading">Sin resultados</div>`;
+    adjustWindowSize();
+    return;
+  }
+  el.className = 'ez-cards-grid';
+  el.innerHTML = ezGroups.map((g, i) => `
+    <div class="yify-dash-cell ez-card js-ez-card" data-i="${i}"
+      title="${escapeHtml(g.title)}${g.year ? ` (${g.year})` : ''} — ver episodios">
+      ${g.image
+        ? `<img class="yify-poster" src="${escapeHtml(g.image)}" loading="lazy" alt="">`
+        : `<div class="yify-poster yify-noposter">📺</div>`}
+      ${g.episodes.length > 1 ? `<span class="ez-ep-count">${g.episodes.length} eps</span>` : ''}
+      <div class="yify-dash-title">${escapeHtml(g.title)}</div>
+      <div class="yify-dash-meta">${escapeHtml(ezCardMeta(g))}</div>
+    </div>`).join('');
+  el.querySelectorAll('.js-ez-card').forEach((c) => {
+    c.addEventListener('click', () => openEzShowModal(ezGroups[+c.dataset.i]));
+  });
+  adjustWindowSize();
+}
+
+// ── Modal de serie: subidos recientes + todos los episodios ────
+let ezModalEl = null;
+function closeEzModal() {
+  if (ezModalEl) { ezModalEl.remove(); ezModalEl = null; }
+  document.removeEventListener('keydown', ezModalEsc);
+}
+function ezModalEsc(e) { if (e.key === 'Escape') closeEzModal(); }
+
+// show: { imdbNum?, title, year?, image?, episodes? }. Con episodes (card de
+// recientes) se muestran arriba; "Todos los episodios" filtra EZTV por
+// imdb_id — si el grupo no trae id, se resuelve por nombre contra IMDb.
+async function openEzShowModal(show) {
+  if (!show) return;
+  closeEzModal();
+  const recent = Array.isArray(show.episodes) ? show.episodes : [];
+  const overlay = document.createElement('div');
+  overlay.className = 'fin-modal';
+  overlay.innerHTML = `
+    <div class="fin-modal-box yify-modal-box ez-modal-box">
+      <div class="fin-exp-modal-head">
+        ${show.image ? `<img class="ez-modal-poster" src="${escapeHtml(show.image)}" alt="">` : ''}
+        <span class="fin-exp-modal-title ez-modal-title">📺 ${escapeHtml(show.title)}${show.year ? ` (${show.year})` : ''}</span>
+        <button class="fin-modal-x js-ez-x" title="Cerrar">✕</button>
+      </div>
+      <div id="ez-modal-tmdb"></div>
+      ${recent.length ? `
+        <div class="yify-cast-title">Subidos recientemente</div>
+        <div class="yify-table ez-modal-eplist ez-modal-recent" id="ez-modal-recent">${ezEpRowsHtml(recent)}</div>` : ''}
+      <div class="yify-cast-title">Todos los episodios</div>
+      <div class="yify-table ez-modal-eplist ez-modal-all" id="ez-modal-all"><div class="ai-loading">Buscando episodios…</div></div>
+      <div class="yify-pager" id="ez-modal-more"></div>
+    </div>`;
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) closeEzModal(); });
+  document.addEventListener('keydown', ezModalEsc);
+  document.body.appendChild(overlay);
+  ezModalEl = overlay;
+  overlay.querySelector('.js-ez-x').addEventListener('click', closeEzModal);
+  const recentBox = overlay.querySelector('#ez-modal-recent');
+  if (recentBox) wireEzRows(recentBox, recent, show);
+
+  // tt id para el filtro: el del grupo, o búsqueda por nombre como fallback.
+  const allBox = overlay.querySelector('#ez-modal-all');
+  let imdbNum = show.imdbNum || null;
+  if (!imdbNum) {
+    try {
+      const r = await window.api.eztv.searchShows(show.title);
+      const hit = (r && !r.error && Array.isArray(r.shows)) ? r.shows[0] : null;
+      if (hit) imdbNum = hit.imdbNum;
+    } catch {}
+    if (ezModalEl !== overlay) return;   // la cerraron mientras buscaba
+  }
+  // Ficha de TMDB (sinopsis en español + rating + dónde ver). Asíncrona e
+  // independiente del listado: sin key o sin ficha, el bloque queda vacío.
+  if (imdbNum) fillEzTmdb(overlay, imdbNum);
+
+  if (!imdbNum) {
+    allBox.innerHTML = `<div class="ai-loading">No se encontró la serie en IMDb para listar el resto de los episodios.</div>`;
+    return;
+  }
+
+  // Carga paginada: 50 por tanda + botón "Cargar más" hasta agotar el total.
+  const loaded = [];
+  let page = 1;
+  const moreBox = overlay.querySelector('#ez-modal-more');
+  async function loadPage() {
+    moreBox.innerHTML = '';
+    let r = null;
+    try { r = await window.api.eztv.list({ limit: EZ_MODAL_PAGE, page, imdbId: imdbNum }); } catch {}
+    if (ezModalEl !== overlay) return;
+    if (!r || r.error) {
+      if (page === 1) {
+        allBox.innerHTML = `<div class="ai-loading">No se pudieron cargar los episodios${r && r.error ? ` (${escapeHtml(r.error)})` : ''}</div>`;
+      }
+      return;
+    }
+    loaded.push(...(r.torrents || []));
+    allBox.innerHTML = loaded.length
+      ? ezEpRowsHtml(loaded)
+      : `<div class="ai-loading">EZTV no tiene torrents de esta serie.</div>`;
+    wireEzRows(allBox, loaded, show);
+    const total = r.count || 0;
+    if (loaded.length && loaded.length < total) {
+      moreBox.innerHTML = `<button class="fin-btn js-ez-more">Cargar más (${loaded.length.toLocaleString('es-UY')} de ${total.toLocaleString('es-UY')})</button>`;
+      moreBox.querySelector('.js-ez-more').addEventListener('click', () => { page++; loadPage(); });
+    }
+  }
+  loadPage();
+}
+
+function renderEzPager(count) {
+  const el = $('ez-pager');
+  if (!el) return;
+  const totalPages = Math.max(1, Math.ceil((count || 0) / EZ_PAGE_SIZE));
+  if (!count || totalPages <= 1) { el.innerHTML = ''; adjustWindowSize(); return; }
+  if (ezPage > totalPages) ezPage = totalPages;
+  el.innerHTML = `
+    <button class="fin-month-nav-btn js-ez-prev" title="Página anterior" ${ezPage <= 1 ? 'disabled' : ''}>‹</button>
+    <span class="yify-pager-info">Página ${ezPage.toLocaleString('es-UY')} de ${totalPages.toLocaleString('es-UY')} · ${count.toLocaleString('es-UY')} torrents</span>
+    <button class="fin-month-nav-btn js-ez-next" title="Página siguiente" ${ezPage >= totalPages ? 'disabled' : ''}>›</button>`;
+  el.querySelector('.js-ez-prev').addEventListener('click', () => {
+    if (ezPage > 1) { ezPage--; loadEzList(); }
+  });
+  el.querySelector('.js-ez-next').addEventListener('click', () => {
+    if (ezPage < totalPages) { ezPage++; loadEzList(); }
+  });
+  adjustWindowSize();
+}
+
+// Listado de recientes agrupado por serie (cards). La página es de torrents
+// crudos de la API: los episodios subidos juntos caen en el mismo card.
+async function loadEzList() {
+  if (ezFavsMode) { loadEzFavs(); return; }
+  const el = $('ez-list');
+  if (el) { el.className = 'yify-table'; el.innerHTML = `<div class="ai-loading">Buscando…</div>`; }
+  try {
+    const r = await window.api.eztv.shows({ limit: EZ_PAGE_SIZE, page: ezPage });
+    if (r && !r.error) {
+      ezOk = true;
+      setEzStatus('connected', 'API conectada');
+      renderEzShows(r.shows);
+      renderEzPager(r.count);
+    } else {
+      markEzDown(r && r.error);
+    }
+  } catch (e) {
+    markEzDown(String(e && e.message || e));
+  }
+}
+
+// Búsqueda: nombre → chips de series (IMDb) → click → modal de la serie.
+async function ezSearchShows() {
+  const q = ($('ez-search') ? $('ez-search').value : '').trim();
+  const box = $('ez-shows');
+  if (!q || !box) return;
+  box.innerHTML = `<div class="ai-loading">Buscando series…</div>`;
+  adjustWindowSize();
+  try {
+    const r = await window.api.eztv.searchShows(q);
+    const shows = (r && !r.error && Array.isArray(r.shows)) ? r.shows : [];
+    if (!shows.length) {
+      box.innerHTML = `<div class="ai-loading">Sin series para “${escapeHtml(q)}”</div>`;
+      adjustWindowSize();
+      return;
+    }
+    box.innerHTML = shows.map((s, i) => `
+      <div class="ez-show-chip js-ez-show" data-i="${i}" title="Ver torrents de ${escapeHtml(s.title)}">
+        ${s.image
+          ? `<img src="${escapeHtml(s.image)}" loading="lazy" alt="">`
+          : `<div class="ez-chip-noimg">📺</div>`}
+        <span class="ez-chip-title">${escapeHtml(s.title)}</span>
+        ${s.year ? `<span class="ez-chip-year">${s.year}</span>` : ''}
+      </div>`).join('');
+    box.querySelectorAll('.js-ez-show').forEach((c) => {
+      c.addEventListener('click', () => openEzShowModal(shows[+c.dataset.i]));
+    });
+    adjustWindowSize();
+  } catch {
+    box.innerHTML = `<div class="ai-loading">Falló la búsqueda</div>`;
+    adjustWindowSize();
+  }
+}
+
+// Sección Favoritos: episodios guardados en la base, 100% offline.
+async function loadEzFavs() {
+  const el = $('ez-list');
+  const pager = $('ez-pager');
+  if (pager) pager.innerHTML = '';
+  if (el) el.innerHTML = `<div class="ai-loading">Cargando favoritos…</div>`;
+  let favs = [];
+  try {
+    const r = await window.api.sfavs.list();
+    if (Array.isArray(r)) favs = r;
+  } catch {}
+  if (!ezFavsMode) return;   // salieron de la sección mientras cargaba
+  ezFavIds = new Set(favs.map((f) => f.id));
+  renderEzRows(favs);
+}
+
+function setEzFavsMode(on) {
+  ezFavsMode = !!on;
+  const btn = $('ez-favs-btn');
+  if (btn) btn.classList.toggle('active', ezFavsMode);
+  ['ez-search', 'ez-search-btn'].forEach((id) => {
+    const n = $(id);
+    if (n) n.style.display = ezFavsMode ? 'none' : '';
+  });
+  const shows = $('ez-shows');
+  if (shows) shows.innerHTML = '';
+  if (ezFavsMode) loadEzFavs();
+  else if (ezOk) loadEzList();
+  else initEztv();
+}
+
+// Health check de arranque. También lo reusa el botón "Reintentar".
+async function initEztv() {
+  setEzStatus('checking', 'Verificando…');
+  const list = $('ez-list');
+  if (list) list.innerHTML = `<div class="ai-loading">Verificando API…</div>`;
+  let st;
+  try { st = await window.api.eztv.check(); } catch { st = { ok: false, error: 'error interno' }; }
+  if (st && st.ok) {
+    ezOk = true;
+    setEzStatus('connected', 'API conectada');
+    loadEzList();
+  } else {
+    markEzDown(st && st.error);
+  }
+}
+
+const ezSearchBtn = $('ez-search-btn');
+if (ezSearchBtn) ezSearchBtn.addEventListener('click', ezSearchShows);
+const ezSearchInput = $('ez-search');
+if (ezSearchInput) {
+  ezSearchInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') ezSearchShows(); });
+  // Búsqueda en vivo: al limpiar, borra los chips de series y vuelve al listado.
+  const ezLiveSearch = debounce(() => {
+    if (ezSearchInput.value.trim()) ezSearchShows();
+    else { const box = $('ez-shows'); if (box) box.innerHTML = ''; adjustWindowSize(); }
+  }, 400);
+  ezSearchInput.addEventListener('input', ezLiveSearch);
+}
+const ezFavsBtn = $('ez-favs-btn');
+if (ezFavsBtn) ezFavsBtn.addEventListener('click', () => setEzFavsMode(!ezFavsMode));
+const ezRefreshBtn = $('ez-refresh');
+if (ezRefreshBtn) ezRefreshBtn.addEventListener('click', () => {
+  if (ezFavsMode) loadEzFavs();
+  else if (ezOk) loadEzList();
+  else initEztv();
+});
+// Ids de favoritos al arrancar, para pintar los ♥ sobre lo ya renderizado.
+window.api.sfavs.ids().then((ids) => {
+  ezFavIds = new Set(Array.isArray(ids) ? ids : []);
+  if (ezFavsMode && ezShown.length) renderEzRows(ezShown);
+}).catch(() => {});
+
+// ── TVMaze: próximos episodios de las series favoritas ─────────
+// Cruza los favoritos EZTV (imdb id en la base) con TVMaze. Mini cards en una
+// sola fila con scroll horizontal; solo series con próximo episodio a estrenar
+// (las terminadas o sin fecha se descartan).
+function tvmCountdown(ts) {
+  const ms = ts - Date.now();
+  if (ms <= 0) return ['¡hoy!', 'today'];
+  const days = Math.ceil(ms / 86400000);
+  if (days === 1) return ['mañana', 'soon'];
+  if (days <= 7) return [`en ${days} días`, 'soon'];
+  return [`en ${days} días`, ''];
+}
+
+async function refreshTvmaze() {
+  const list = $('tvm-list');
+  if (!list) return;
+  const btn = $('tvm-refresh');
+  if (btn) btn.classList.add('spinning');
+  try {
+    const r = await window.api.tvmaze.upcoming();
+    if (!r || r.error) {
+      list.innerHTML = `<div class="ai-loading">TVMaze no disponible${r && r.error ? ` (${escapeHtml(r.error)})` : ''}</div>`;
+      return;
+    }
+    const whenEl = $('tvm-when');
+    if (whenEl) whenEl.textContent = r.fetchedAt ? fmtWhen(r.fetchedAt) : '';
+    // Solo las que tienen próximo episodio con fecha (ya vienen ordenadas por fecha).
+    const shows = (Array.isArray(r.shows) ? r.shows : []).filter((s) => s.next && s.next.airstamp);
+    if (!shows.length) {
+      list.innerHTML = `<div class="ai-loading">Ninguna de tus series favoritas (♥) tiene episodios próximos a estrenar.</div>`;
+      return;
+    }
+    list.innerHTML = shows.map((s) => {
+      const n = s.next;
+      const [cd, cls] = tvmCountdown(n.airstamp);
+      const date = new Date(n.airstamp).toLocaleDateString('es-UY', { day: '2-digit', month: 'short' });
+      return `
+        <div class="tvm-card" data-url="${escapeHtml(s.url || '')}" title="${escapeHtml(s.title)}${n.name ? ` — ${escapeHtml(n.name)}` : ''} — abrir en TVMaze">
+          ${s.image ? `<img class="tvm-poster" src="${escapeHtml(s.image)}" loading="lazy" alt="">` : `<div class="tvm-poster tvm-noimg">📺</div>`}
+          <div class="tvm-card-body">
+            <div class="tvm-card-title">${escapeHtml(s.title)}</div>
+            <div class="tvm-card-ep"><b>S${String(n.season).padStart(2, '0')}E${String(n.episode).padStart(2, '0')}</b> · ${date}</div>
+            <div class="tvm-card-count ${cls}">${cd}</div>
+          </div>
+        </div>`;
+    }).join('');
+    list.querySelectorAll('.tvm-card').forEach((row) => {
+      row.addEventListener('click', () => { if (row.dataset.url) window.api.openExternal(row.dataset.url); });
+    });
+  } finally {
+    if (btn) btn.classList.remove('spinning');
+    adjustWindowSize();
+  }
+}
+
+const tvmRefreshBtn = $('tvm-refresh');
+if (tvmRefreshBtn) tvmRefreshBtn.addEventListener('click', refreshTvmaze);
+
+// ── Reddit (tab) ───────────────────────────────────────────────
+// Subreddits configurables (localStorage). Click en un chip alterna "solo
+// este sub"; ✕ lo saca de la lista. Posts vía feeds RSS (sin score: el feed
+// no lo trae). Click en la fila abre el post en el browser.
+const RD_DEFAULT_SUBS = ['uruguay', 'programming', 'technology'];
+let rdSubs = RD_DEFAULT_SUBS.slice();
+try {
+  const saved = JSON.parse(localStorage.getItem('redditSubs') || 'null');
+  if (Array.isArray(saved) && saved.length) rdSubs = saved;
+} catch {}
+let rdOnly = null;        // sub elegido con click en el chip (filtro temporal)
+let rdStarted = false;
+let rdLoading = false;
+
+function rdSaveSubs() {
+  try { localStorage.setItem('redditSubs', JSON.stringify(rdSubs)); } catch {}
+}
+
+function rdTimeAgo(ts) {
+  if (!ts) return '';
+  const m = Math.floor((Date.now() - ts) / 60000);
+  if (m < 1) return 'ahora';
+  if (m < 60) return `hace ${m} min`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `hace ${h} h`;
+  return `hace ${Math.floor(h / 24)} d`;
+}
+
+function renderRdSubs() {
+  const box = $('rd-subs');
+  if (!box) return;
+  box.innerHTML = rdSubs.map((s, i) => `
+    <span class="rd-chip${rdOnly === s ? ' active' : ''}" data-i="${i}" title="${rdOnly === s ? 'Ver todos los subs' : `Ver solo r/${escapeHtml(s)}`}">
+      r/${escapeHtml(s)}
+      <button class="rd-chip-x js-rd-del" data-i="${i}" title="Quitar r/${escapeHtml(s)}">✕</button>
+    </span>`).join('');
+  box.querySelectorAll('.rd-chip').forEach((c) => {
+    c.addEventListener('click', () => {
+      const s = rdSubs[+c.dataset.i];
+      rdOnly = rdOnly === s ? null : s;
+      renderRdSubs();
+      loadReddit();
+    });
+  });
+  box.querySelectorAll('.js-rd-del').forEach((b) => {
+    b.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const s = rdSubs[+b.dataset.i];
+      rdSubs.splice(+b.dataset.i, 1);
+      if (rdOnly === s) rdOnly = null;
+      rdSaveSubs();
+      renderRdSubs();
+      loadReddit();
+    });
+  });
+}
+
+async function loadReddit() {
+  const list = $('rd-list');
+  if (!list || rdLoading) return;
+  const subs = rdOnly ? [rdOnly] : rdSubs;
+  if (!subs.length) {
+    list.innerHTML = `<div class="ai-loading">Agregá un subreddit arriba para empezar.</div>`;
+    adjustWindowSize();
+    return;
+  }
+  rdLoading = true;
+  const btn = $('rd-refresh');
+  if (btn) btn.classList.add('spinning');
+  list.innerHTML = `<div class="ai-loading">Cargando posts…</div>`;
+  try {
+    const sort = ($('rd-sort') && $('rd-sort').value) || 'hot';
+    const t = ($('rd-t') && $('rd-t').value) || 'day';
+    const r = await window.api.reddit.posts({ subs, sort, t, limit: 25 });
+    if (!r || r.error) {
+      list.innerHTML = `<div class="ai-loading">Reddit no responde${r && r.error ? ` (${escapeHtml(r.error)})` : ''}</div>`;
+      return;
+    }
+    const whenEl = $('rd-when');
+    if (whenEl) whenEl.textContent = r.fetchedAt ? fmtWhen(r.fetchedAt) : '';
+    const posts = Array.isArray(r.posts) ? r.posts : [];
+    if (!posts.length) {
+      list.innerHTML = `<div class="ai-loading">Sin posts</div>`;
+      return;
+    }
+    list.innerHTML = posts.map((p, i) => `
+      <div class="rd-post js-rd-open" data-i="${i}">
+        ${p.thumb ? `<img class="rd-thumb" src="${escapeHtml(p.thumb)}" loading="lazy" alt="">` : `<div class="rd-thumb rd-nothumb">👽</div>`}
+        <div class="rd-body">
+          <div class="rd-title">${escapeHtml(p.title)}</div>
+          <div class="rd-meta">
+            <span class="rd-sub">r/${escapeHtml(p.sub)}</span>
+            · u/${escapeHtml(p.author)} · ${rdTimeAgo(p.createdAt)}
+            ${p.url ? `<button class="rd-ext js-rd-ext" data-i="${i}" title="Abrir link externo">↗ ${escapeHtml((() => { try { return new URL(p.url).hostname.replace(/^www\./, ''); } catch { return 'link'; } })())}</button>` : ''}
+          </div>
+        </div>
+      </div>`).join('');
+    const shown = posts;
+    list.querySelectorAll('.js-rd-open').forEach((n) => {
+      n.addEventListener('click', () => {
+        const p = shown[+n.dataset.i];
+        if (p && p.permalink) window.api.openExternal(p.permalink);
+      });
+    });
+    list.querySelectorAll('.js-rd-ext').forEach((b) => {
+      b.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const p = shown[+b.dataset.i];
+        if (p && p.url) window.api.openExternal(p.url);
+      });
+    });
+  } finally {
+    rdLoading = false;
+    if (btn) btn.classList.remove('spinning');
+    adjustWindowSize();
+  }
+}
+
+function initReddit() {
+  if (rdStarted) return;
+  rdStarted = true;
+  renderRdSubs();
+  loadReddit();
+}
+
+const rdAddBtn = $('rd-add-btn');
+if (rdAddBtn) rdAddBtn.addEventListener('click', () => {
+  const input = $('rd-add');
+  const s = (input ? input.value : '').trim().replace(/^r\//i, '');
+  if (!s || !/^[A-Za-z0-9_]+$/.test(s)) return;
+  if (!rdSubs.some((x) => x.toLowerCase() === s.toLowerCase())) {
+    rdSubs.push(s);
+    rdSaveSubs();
+    renderRdSubs();
+    loadReddit();
+  }
+  if (input) input.value = '';
+});
+const rdAddInput = $('rd-add');
+if (rdAddInput) rdAddInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') rdAddBtn.click(); });
+const rdSortSel = $('rd-sort');
+if (rdSortSel) rdSortSel.addEventListener('change', () => {
+  const tSel = $('rd-t');
+  if (tSel) tSel.hidden = rdSortSel.value !== 'top';
+  loadReddit();
+});
+const rdTSel = $('rd-t');
+if (rdTSel) rdTSel.addEventListener('change', loadReddit);
+const rdRefreshBtn = $('rd-refresh');
+if (rdRefreshBtn) rdRefreshBtn.addEventListener('click', loadReddit);
+
+// ── Noticias UY (tab) ──────────────────────────────────────────
+// Feeds RSS de diarios uruguayos mezclados y ordenados por fecha. Los chips
+// activan/desactivan cada fuente (selección en localStorage). Click en una
+// noticia abre el artículo en el browser.
+let newsCatalog = [];          // [{ id, name }] de las fuentes disponibles
+let newsSelected = null;       // Set de ids de diarios activos (null = todos)
+let newsAllPosts = [];         // últimas noticias bajadas (sin filtrar)
+let newsQuery = '';            // texto del buscador
+let newsTopic = null;          // tema filtrado (null = todos)
+let newsTopicCatalog = [];     // [{ id, label }] de temas disponibles
+let newsView = 'list';         // vista: 'cards' | 'list' | 'compact'
+try { newsView = localStorage.getItem('newsView') || 'list'; } catch {}
+let newsStarted = false;
+let newsLoading = false;
+let newsTimer = null;
+const NEWS_INTERVAL_MS = 15 * 60 * 1000;   // auto-refresh cada 15 min
+
+// Normaliza para buscar/clasificar sin importar acentos ni mayúsculas.
+function newsNorm(s) {
+  return String(s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+}
+
+function newsTopicLabel(id) {
+  const t = newsTopicCatalog.find((x) => x.id === id);
+  return t ? t.label : id;
+}
+
+// Badges de tema (con color por tema vía .news-tag-<id>).
+function newsTagsHtml(p) {
+  if (!Array.isArray(p.topics) || !p.topics.length) return '';
+  return `<span class="news-tags">${p.topics
+    .map((id) => `<span class="news-tag news-tag-${id}">${escapeHtml(newsTopicLabel(id))}</span>`)
+    .join('')}</span>`;
+}
+
+function newsLoadSelected() {
+  try {
+    const saved = JSON.parse(localStorage.getItem('newsSelectedSources') || 'null');
+    if (Array.isArray(saved)) newsSelected = new Set(saved);
+  } catch {}
+}
+function newsSaveSelected() {
+  try { localStorage.setItem('newsSelectedSources', JSON.stringify([...(newsSelected || [])])); } catch {}
+}
+function newsIsOn(id) { return !newsSelected || newsSelected.has(id); }
+
+function renderNewsChips() {
+  const box = $('news-sources');
+  if (!box) return;
+  box.innerHTML = newsCatalog.map((s) => `
+    <span class="rd-chip${newsIsOn(s.id) ? ' active' : ''}" data-id="${escapeHtml(s.id)}"
+      title="${newsIsOn(s.id) ? 'Ocultar' : 'Mostrar'} ${escapeHtml(s.name)}">${escapeHtml(s.name)}</span>`).join('');
+  box.querySelectorAll('.rd-chip').forEach((c) => {
+    c.addEventListener('click', () => {
+      const id = c.dataset.id;
+      // Primer toggle: materializa el set "todas" para poder sacar una.
+      if (!newsSelected) newsSelected = new Set(newsCatalog.map((s) => s.id));
+      if (newsSelected.has(id)) newsSelected.delete(id); else newsSelected.add(id);
+      if (!newsSelected.size) newsSelected.add(id);   // no dejar todo apagado
+      newsSaveSelected();
+      renderNewsChips();
+      loadNews();
+    });
+  });
+}
+
+async function loadNews() {
+  const list = $('news-list');
+  if (!list || newsLoading) return;
+  newsLoading = true;
+  const btn = $('news-refresh');
+  if (btn) btn.classList.add('spinning');
+  list.innerHTML = `<div class="ai-loading">Cargando noticias…</div>`;
+  try {
+    const sources = newsSelected ? [...newsSelected] : [];
+    const r = await window.api.news.posts({ sources, limit: 50 });
+    if (!r || r.error) {
+      list.innerHTML = `<div class="ai-loading">No se pudieron cargar las noticias${r && r.error ? ` (${escapeHtml(r.error)})` : ''}</div>`;
+      return;
+    }
+    if (Array.isArray(r.sources) && r.sources.length && !newsCatalog.length) {
+      newsCatalog = r.sources;
+      renderNewsChips();
+    }
+    if (Array.isArray(r.topics) && r.topics.length) newsTopicCatalog = r.topics;
+    const whenEl = $('news-when');
+    if (whenEl) whenEl.textContent = r.fetchedAt ? fmtWhen(r.fetchedAt) : '';
+    newsAllPosts = Array.isArray(r.posts) ? r.posts : [];
+    renderNewsTopics();
+    renderNewsList();
+  } finally {
+    newsLoading = false;
+    if (btn) btn.classList.remove('spinning');
+    adjustWindowSize();
+  }
+}
+
+// Chips de temas: "Todos" + cada tema presente en lo bajado, con su conteo.
+function renderNewsTopics() {
+  const box = $('news-topics');
+  if (!box) return;
+  const counts = {};
+  newsAllPosts.forEach((p) => (p.topics || []).forEach((t) => { counts[t] = (counts[t] || 0) + 1; }));
+  const avail = newsTopicCatalog.filter((t) => counts[t.id]);
+  if (newsTopic && !counts[newsTopic]) newsTopic = null;   // el tema activo desapareció
+  const chips = [`<span class="rd-chip news-topic-chip${!newsTopic ? ' active' : ''}" data-id="">Todos</span>`]
+    .concat(avail.map((t) => `
+      <span class="rd-chip news-topic-chip${newsTopic === t.id ? ' active' : ''}" data-id="${escapeHtml(t.id)}">
+        <span class="news-dot news-tag-${t.id}"></span>${escapeHtml(t.label)} <b>${counts[t.id]}</b></span>`));
+  box.innerHTML = chips.join('');
+  box.querySelectorAll('.news-topic-chip').forEach((c) => {
+    c.addEventListener('click', () => {
+      newsTopic = c.dataset.id || null;
+      renderNewsTopics();
+      renderNewsList();
+    });
+  });
+}
+
+// Filtra por tema + texto del buscador y pinta según la vista elegida.
+function renderNewsList() {
+  const list = $('news-list');
+  if (!list) return;
+  if (!newsAllPosts.length) {
+    list.className = 'rd-list';
+    list.innerHTML = `<div class="ai-loading">Sin noticias</div>`;
+    adjustWindowSize();
+    return;
+  }
+  let posts = newsAllPosts;
+  if (newsTopic) posts = posts.filter((p) => Array.isArray(p.topics) && p.topics.includes(newsTopic));
+  const q = newsNorm(newsQuery.trim());
+  if (q) posts = posts.filter((p) => newsNorm(`${p.title} ${p.summary} ${p.source}`).includes(q));
+  if (!posts.length) {
+    list.className = 'rd-list';
+    list.innerHTML = `<div class="ai-loading">Sin resultados${newsQuery.trim() ? ` para “${escapeHtml(newsQuery.trim())}”` : ''}</div>`;
+    adjustWindowSize();
+    return;
+  }
+  if (newsView === 'cards') renderNewsCards(list, posts);
+  else if (newsView === 'compact') renderNewsCompact(list, posts);
+  else renderNewsRows(list, posts);
+  // Click compartido por las tres vistas (cada ítem trae data-i).
+  list.querySelectorAll('.js-news-open').forEach((n) => {
+    n.addEventListener('click', () => {
+      const p = posts[+n.dataset.i];
+      if (p && p.url) window.api.openExternal(p.url);
+    });
+  });
+  adjustWindowSize();
+}
+
+// Vista lista (default): miniatura + título + resumen + meta con tags.
+function renderNewsRows(list, posts) {
+  list.className = 'rd-list';
+  list.innerHTML = posts.map((p, i) => `
+    <div class="rd-post news-post js-news-open" data-i="${i}">
+      ${p.image ? `<img class="rd-thumb" src="${escapeHtml(p.image)}" loading="lazy" alt="">` : `<div class="rd-thumb rd-nothumb">📰</div>`}
+      <div class="rd-body">
+        <div class="rd-title">${escapeHtml(p.title)}</div>
+        ${p.summary ? `<div class="news-summary">${escapeHtml(p.summary)}</div>` : ''}
+        <div class="rd-meta">
+          <span class="rd-sub">${escapeHtml(p.source)}</span>
+          ${p.createdAt ? `· ${rdTimeAgo(p.createdAt)}` : ''}
+          ${newsTagsHtml(p)}
+        </div>
+      </div>
+    </div>`).join('');
+}
+
+// Vista tarjetas: grilla con imagen grande arriba.
+function renderNewsCards(list, posts) {
+  list.className = 'news-cards';
+  list.innerHTML = posts.map((p, i) => `
+    <div class="news-card js-news-open" data-i="${i}" title="${escapeHtml(p.title)}">
+      ${p.image ? `<img class="news-card-img" src="${escapeHtml(p.image)}" loading="lazy" alt="">` : `<div class="news-card-img news-card-noimg">📰</div>`}
+      <div class="news-card-body">
+        ${newsTagsHtml(p)}
+        <div class="news-card-title">${escapeHtml(p.title)}</div>
+        ${p.summary ? `<div class="news-summary">${escapeHtml(p.summary)}</div>` : ''}
+        <div class="rd-meta"><span class="rd-sub">${escapeHtml(p.source)}</span>${p.createdAt ? ` · ${rdTimeAgo(p.createdAt)}` : ''}</div>
+      </div>
+    </div>`).join('');
+}
+
+// Vista compacta: titulares densos, una línea, sin imagen.
+function renderNewsCompact(list, posts) {
+  list.className = 'news-compact';
+  list.innerHTML = posts.map((p, i) => `
+    <div class="news-cmp js-news-open" data-i="${i}" title="${escapeHtml(p.summary || p.title)}">
+      ${newsTagsHtml(p)}
+      <span class="news-cmp-title">${escapeHtml(p.title)}</span>
+      <span class="news-cmp-meta">${escapeHtml(p.source)}${p.createdAt ? ` · ${rdTimeAgo(p.createdAt)}` : ''}</span>
+    </div>`).join('');
+}
+
+function initNews() {
+  if (newsStarted) return;
+  newsStarted = true;
+  newsLoadSelected();
+  document.querySelectorAll('#news-view-toggle .yify-view-btn').forEach((b) => {
+    b.classList.toggle('active', b.dataset.view === newsView);
+  });
+  loadNews();
+  if (!newsTimer) newsTimer = setInterval(loadNews, NEWS_INTERVAL_MS);   // refresco cada 15 min
+}
+
+const newsRefreshBtn = $('news-refresh');
+if (newsRefreshBtn) newsRefreshBtn.addEventListener('click', loadNews);
+const newsSearchInput = $('news-search');
+if (newsSearchInput) newsSearchInput.addEventListener('input', () => {
+  newsQuery = newsSearchInput.value;
+  renderNewsList();   // filtra en vivo sobre lo ya bajado
+});
+const newsSearchClear = $('news-search-clear');
+if (newsSearchClear) newsSearchClear.addEventListener('click', () => {
+  newsQuery = '';
+  if (newsSearchInput) newsSearchInput.value = '';
+  renderNewsList();
+});
+// Toggle de vista (tarjetas / lista / compacta), persistido en localStorage.
+document.querySelectorAll('#news-view-toggle .yify-view-btn').forEach((b) => {
+  b.addEventListener('click', () => {
+    if (b.dataset.view === newsView) return;
+    newsView = b.dataset.view;
+    try { localStorage.setItem('newsView', newsView); } catch {}
+    document.querySelectorAll('#news-view-toggle .yify-view-btn').forEach((x) => {
+      x.classList.toggle('active', x.dataset.view === newsView);
+    });
+    renderNewsList();
+  });
+});
+
+// ── Juegos: ofertas CheapShark (tab) ───────────────────────────
+// Grid de cards con capsule de la tienda, -% y precio viejo/nuevo. El click
+// abre el redirect oficial de CheapShark (lleva a la tienda). Paginado simple
+// prev/next: la API no devuelve total en el body.
+let gdStarted = false;
+let gdPage = 0;
+let gdLoading = false;
+
+function fmtUsd2(v) {
+  if (v == null || !isFinite(v)) return '—';
+  return 'U$S ' + v.toFixed(2);
+}
+
+async function loadGames() {
+  const list = $('gd-list');
+  if (!list || gdLoading) return;
+  gdLoading = true;
+  const btn = $('gd-refresh');
+  if (btn) btn.classList.add('spinning');
+  list.innerHTML = `<div class="ai-loading">Cargando ofertas…</div>`;
+  const pager = $('gd-pager');
+  if (pager) pager.innerHTML = '';
+  try {
+    const val = (id, def = '') => { const n = $(id); return n ? n.value : def; };
+    const r = await window.api.games.deals({
+      page: gdPage,
+      storeId: val('gd-store'),
+      sortBy: val('gd-sort', 'Deal Rating'),
+      title: val('gd-search').trim(),
+      maxPrice: parseInt(val('gd-maxprice', '0'), 10) || 0,
+    });
+    if (!r || r.error) {
+      list.innerHTML = `<div class="ai-loading">CheapShark no responde${r && r.error ? ` (${escapeHtml(r.error)})` : ''}</div>`;
+      return;
+    }
+    const whenEl = $('gd-when');
+    if (whenEl) whenEl.textContent = r.fetchedAt ? fmtWhen(r.fetchedAt) : '';
+    // Primer load: llenar el select de tiendas (manteniendo la selección).
+    const storeSel = $('gd-store');
+    if (storeSel && storeSel.options.length <= 1 && Array.isArray(r.stores) && r.stores.length) {
+      const cur = storeSel.value;
+      storeSel.innerHTML = `<option value="">Todas las tiendas</option>` +
+        r.stores.map((s) => `<option value="${escapeHtml(s.id)}">${escapeHtml(s.name)}</option>`).join('');
+      storeSel.value = cur;
+    }
+    const deals = Array.isArray(r.deals) ? r.deals : [];
+    if (!deals.length) {
+      list.innerHTML = `<div class="ai-loading">Sin ofertas con esos filtros</div>`;
+      return;
+    }
+    list.innerHTML = deals.map((d, i) => `
+      <div class="gd-card js-gd-open" data-i="${i}" title="${escapeHtml(d.title)} — comprar en ${escapeHtml(d.store)}">
+        <div class="gd-thumb-wrap">
+          ${d.thumb ? `<img class="gd-thumb" src="${escapeHtml(d.thumb)}" loading="lazy" alt="">` : `<div class="gd-thumb gd-nothumb">🎮</div>`}
+          ${d.savings ? `<span class="gd-savings">-${d.savings}%</span>` : ''}
+        </div>
+        <div class="gd-info">
+          <div class="gd-title">${escapeHtml(d.title)}</div>
+          <div class="gd-meta">${escapeHtml(d.store)}${d.metacritic ? ` · MC ${d.metacritic}` : ''}${d.steamRating ? ` · 👍 ${d.steamRating}%` : ''}</div>
+          <div class="gd-prices">
+            ${d.normalPrice != null && d.salePrice != null && d.normalPrice > d.salePrice ? `<span class="gd-old">${fmtUsd2(d.normalPrice)}</span>` : ''}
+            <span class="gd-new">${d.salePrice === 0 ? 'GRATIS' : fmtUsd2(d.salePrice)}</span>
+          </div>
+        </div>
+      </div>`).join('');
+    list.querySelectorAll('.js-gd-open').forEach((c) => {
+      c.addEventListener('click', () => {
+        const d = deals[+c.dataset.i];
+        if (d && d.url) window.api.openExternal(d.url);
+      });
+    });
+    if (pager) {
+      pager.innerHTML = `
+        <button class="fin-month-nav-btn js-gd-prev" title="Página anterior" ${gdPage <= 0 ? 'disabled' : ''}>‹</button>
+        <span class="yify-pager-info">Página ${gdPage + 1}</span>
+        <button class="fin-month-nav-btn js-gd-next" title="Página siguiente" ${deals.length < 24 ? 'disabled' : ''}>›</button>`;
+      pager.querySelector('.js-gd-prev').addEventListener('click', () => { if (gdPage > 0) { gdPage--; loadGames(); } });
+      pager.querySelector('.js-gd-next').addEventListener('click', () => { gdPage++; loadGames(); });
+    }
+  } finally {
+    gdLoading = false;
+    if (btn) btn.classList.remove('spinning');
+    adjustWindowSize();
+  }
+}
+
+function gdSearchNew() { gdPage = 0; loadGames(); }
+
+function initGames() {
+  if (gdStarted) return;
+  gdStarted = true;
+  loadGames();
+}
+
+const gdSearchBtn = $('gd-search-btn');
+if (gdSearchBtn) gdSearchBtn.addEventListener('click', gdSearchNew);
+const gdSearchInput = $('gd-search');
+if (gdSearchInput) {
+  gdSearchInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') gdSearchNew(); });
+  // Búsqueda en vivo: filtra mientras se escribe; al limpiar vuelve a las ofertas.
+  gdSearchInput.addEventListener('input', debounce(gdSearchNew, 400));
+}
+['gd-store', 'gd-sort', 'gd-maxprice'].forEach((id) => {
+  const sel = $(id);
+  if (sel) sel.addEventListener('change', gdSearchNew);
+});
+const gdRefreshBtn = $('gd-refresh');
+if (gdRefreshBtn) gdRefreshBtn.addEventListener('click', loadGames);
+
+// ── GitHub (tab) ───────────────────────────────────────────────
+// Token personal en API Keys ("GitHub"). Tres bloques: notificaciones, PRs
+// abiertos del usuario y repos con push reciente. Todo clickeable al browser.
+let ghStarted = false;
+let ghLoading = false;
+
+async function loadGithub() {
+  const box = $('gh-content');
+  if (!box || ghLoading) return;
+  ghLoading = true;
+  const btn = $('gh-refresh');
+  if (btn) btn.classList.add('spinning');
+  try {
+    const r = await window.api.github.overview();
+    if (r && r.error === 'sin key') {
+      box.innerHTML = `
+        <div class="stocks-hint">Agregá una key llamada <code>GitHub</code> en API Keys (token personal con
+        permisos <code>repo</code> + <code>notifications</code>) para ver tus notificaciones, PRs y repos acá.</div>`;
+      return;
+    }
+    if (!r || r.error) {
+      box.innerHTML = `<div class="ai-loading">GitHub no responde${r && r.error ? ` (${escapeHtml(r.error)})` : ''}</div>`;
+      return;
+    }
+    const loginEl = $('gh-login');
+    if (loginEl) loginEl.textContent = r.login ? `· @${r.login}` : '';
+    const whenEl = $('gh-when');
+    if (whenEl) whenEl.textContent = r.fetchedAt ? fmtWhen(r.fetchedAt) : '';
+
+    const notifs = Array.isArray(r.notifications) ? r.notifications : [];
+    const prs = Array.isArray(r.prs) ? r.prs : [];
+    const repos = Array.isArray(r.repos) ? r.repos : [];
+    box.innerHTML = `
+      <div class="gh-section-title">Notificaciones ${notifs.length ? `<span class="gh-badge">${notifs.length}</span>` : ''}</div>
+      ${notifs.length ? notifs.map((n, i) => `
+        <div class="gh-row js-gh-open" data-url="${escapeHtml(n.url || '')}" title="${escapeHtml(n.repo)} — abrir">
+          <span class="gh-icon">${n.icon}</span>
+          <span class="gh-row-main">
+            <span class="gh-row-title">${escapeHtml(n.title)}</span>
+            <span class="gh-row-sub">${escapeHtml(n.repo)} · ${escapeHtml(n.reason)} · ${rdTimeAgo(n.updatedAt)}</span>
+          </span>
+        </div>`).join('') : `<div class="gh-empty">Sin notificaciones pendientes 🎉</div>`}
+
+      <div class="gh-section-title">PRs abiertos ${prs.length ? `<span class="gh-badge">${prs.length}</span>` : ''}</div>
+      ${prs.length ? prs.map((p) => `
+        <div class="gh-row js-gh-open" data-url="${escapeHtml(p.url || '')}" title="Abrir PR">
+          <span class="gh-icon">⇄</span>
+          <span class="gh-row-main">
+            <span class="gh-row-title">${p.draft ? '<span class="gh-draft">draft</span> ' : ''}${escapeHtml(p.title)}</span>
+            <span class="gh-row-sub">${escapeHtml(p.repo)}#${p.number} · ${rdTimeAgo(p.updatedAt)}</span>
+          </span>
+        </div>`).join('') : `<div class="gh-empty">Sin PRs abiertos</div>`}
+
+      <div class="gh-section-title">Repos recientes</div>
+      ${repos.map((rp) => `
+        <div class="gh-row js-gh-open" data-url="${escapeHtml(rp.url || '')}" title="Abrir repo">
+          <span class="gh-icon">${rp.private ? '🔒' : '📦'}</span>
+          <span class="gh-row-main">
+            <span class="gh-row-title">${escapeHtml(rp.name)}</span>
+            <span class="gh-row-sub">${rp.language ? `${escapeHtml(rp.language)} · ` : ''}★ ${rp.stars}${rp.openIssues ? ` · ${rp.openIssues} issues` : ''} · push ${rdTimeAgo(rp.pushedAt)}</span>
+          </span>
+        </div>`).join('')}`;
+    box.querySelectorAll('.js-gh-open').forEach((row) => {
+      row.addEventListener('click', () => { if (row.dataset.url) window.api.openExternal(row.dataset.url); });
+    });
+  } finally {
+    ghLoading = false;
+    if (btn) btn.classList.remove('spinning');
+    adjustWindowSize();
+  }
+}
+
+function initGithub() {
+  if (ghStarted) { return; }
+  ghStarted = true;
+  loadGithub();
+}
+
+const ghRefreshBtn = $('gh-refresh');
+if (ghRefreshBtn) ghRefreshBtn.addEventListener('click', loadGithub);
 
 // ── Speedtest ──────────────────────────────────────────────────
 function fmtMbps(v) {
@@ -1461,11 +2917,13 @@ function renderKeys() {
       }
     });
     card.querySelector('.js-delete').addEventListener('click', async () => {
-      const wasEleven = (apiKeys[idx].name || '').toLowerCase() === 'elevenlabs';
+      const was = (apiKeys[idx].name || '').toLowerCase();
       apiKeys.splice(idx, 1);
       await persistKeys();
       renderKeys();
-      if (wasEleven) refreshAI();
+      if (was === 'elevenlabs') refreshAI();
+      if (was === 'finnhub') refreshStocks();
+      if (was === 'github' && ghStarted) loadGithub();
     });
   });
 }
@@ -1515,7 +2973,10 @@ keyAddBtn.addEventListener('click', async () => {
   keyValue.value = '';
   setKeyStatus('Agregada', 'success');
   renderKeys();
-  if (name.toLowerCase() === 'elevenlabs') refreshAI();
+  const lower = name.toLowerCase();
+  if (lower === 'elevenlabs') refreshAI();
+  if (lower === 'finnhub') refreshStocks();
+  if (lower === 'github' && ghStarted) loadGithub();
 });
 
 keyValue.addEventListener('keydown', (e) => {
@@ -1639,6 +3100,8 @@ function accountCardHtml(a) {
     ? `<a class="fin-card-name js-site" href="#" data-url="${escapeHtml(a.url)}" title="Abrir sitio">${escapeHtml(a.name)} <span class="fin-site-arrow">↗</span></a>`
     : `<span class="fin-card-name">${escapeHtml(a.name)}</span>`;
 
+  const extra = a.invest ? descriptionBlockHtml(a) : projectionBlockHtml(a);
+
   return `
     <div class="fin-card" data-id="${a.id}">
       <div class="fin-card-head">
@@ -1651,7 +3114,59 @@ function accountCardHtml(a) {
         <button class="fin-btn js-save-manual">Guardar</button>
         <button class="fin-btn danger js-clear" title="Borrar entradas de ${escapeHtml(a.name)}">Limpiar</button>
       </div>
+      ${extra}
       <div class="fin-card-status"></div>
+    </div>`;
+}
+
+// Monthly projection block (regular accounts): a "Total proyectado" readout plus
+// inputs to set it. The forecast is independent of the saved balance — it can be
+// overwritten or removed and never accumulates.
+function projectionBlockHtml(a) {
+  const proj = a.projection || {};
+  const hasProj = proj.uyu != null || proj.usd != null;
+  const total = a.currencies.map((cur) => {
+    const v = proj[cur.toLowerCase()];
+    if (v == null) return '';
+    const amt = finHidden ? `<span class="fin-amt-hidden">${FIN_MASK}</span>` : fmtMoney(v, cur);
+    return `<span class="fin-proj-amt">${amt}</span>`;
+  }).filter(Boolean).join('');
+
+  const inputs = a.currencies.map((cur) => {
+    const v = proj[cur.toLowerCase()];
+    const ph = (finHidden || v == null) ? (cur === 'USD' ? 'Dólares' : 'Pesos') : fmtPlain(v);
+    return `
+      <input class="fin-input js-proj" data-cur="${cur}" type="text" inputmode="decimal"
+             placeholder="${ph}" autocomplete="off">`;
+  }).join('');
+
+  return `
+    <div class="fin-proj">
+      <div class="fin-proj-head">
+        <span class="fin-proj-label">Total proyectado</span>
+        <span class="fin-proj-total">${hasProj ? total : '<span class="fin-amt-empty">—</span>'}</span>
+      </div>
+      <div class="fin-inputs-row">${inputs}</div>
+      <div class="fin-actions-row">
+        <button class="fin-btn js-save-proj">Proyectar</button>
+        <button class="fin-btn danger js-clear-proj" title="Quitar proyección"${hasProj ? '' : ' disabled'}>Quitar</button>
+      </div>
+    </div>`;
+}
+
+// Description block (Inversiones card): free-text list of investments instead of
+// a projection.
+function descriptionBlockHtml(a) {
+  const desc = a.description || '';
+  return `
+    <div class="fin-desc">
+      <span class="fin-proj-label">Descripción</span>
+      <textarea class="fin-input fin-desc-input js-desc" rows="3"
+                placeholder="Listá tus inversiones (plazo fijo, acciones, cripto…)"
+                autocomplete="off">${escapeHtml(desc)}</textarea>
+      <div class="fin-actions-row">
+        <button class="fin-btn js-save-desc">Guardar descripción</button>
+      </div>
     </div>`;
 }
 
@@ -2319,12 +3834,12 @@ async function renderFinanzasCharts(accounts, expenses) {
 
   const blocks = [];
 
-  // 1) Ahorros en el tiempo (total UYU).
+  // 1) Ahorros en el tiempo (total UYU). Click → modal con el gráfico completo.
   const uyuVals = (history || []).map((p) => p.uyu || 0);
   if (uyuVals.length >= 2) {
     const last = uyuVals[uyuVals.length - 1];
     blocks.push(`
-      <div class="fin-chart">
+      <div class="fin-chart fin-chart-click js-fin-sav-open" title="Ver gráfico completo con todas las métricas">
         <div class="fin-chart-head">
           <span class="fin-chart-title">Ahorros en el tiempo</span>
           <span class="fin-chart-meta">$U ${finHidden ? FIN_MASK : fmtPlain(last)}</span>
@@ -2376,7 +3891,238 @@ async function renderFinanzasCharts(accounts, expenses) {
     </div>`);
 
   finChartsEl.innerHTML = blocks.join('');
+  const savOpen = finChartsEl.querySelector('.js-fin-sav-open');
+  if (savOpen) savOpen.addEventListener('click', openFinSavModal);
   adjustWindowSize();
+}
+
+// ── Modal "Ahorros en el tiempo" (gráfico completo) ─────────────
+// Multi-serie sobre la línea de tiempo real: total $U, total U$S, consolidado
+// en pesos (al dólar compra) y cada cuenta por separado. Leyenda con toggles,
+// crosshair con tooltip de valores y fila de estadísticas del total.
+const FIN_SAV_PALETTE = ['#60a5fa', '#c4b5fd', '#f472b6', '#34d399', '#fb923c', '#a3e635', '#22d3ee', '#f87171'];
+let finSavModalEl = null;
+let finSavData = null;     // { allTs, series } mientras el modal está abierto
+
+function closeFinSavModal() {
+  if (finSavModalEl) { finSavModalEl.remove(); finSavModalEl = null; }
+  finSavData = null;
+  document.removeEventListener('keydown', finSavEsc);
+}
+function finSavEsc(e) { if (e.key === 'Escape') closeFinSavModal(); }
+
+// La selección de series de la leyenda persiste en localStorage (por label),
+// así el modal recuerda qué toggles quedaron encendidos al reabrirlo.
+function finSavLoadToggles() {
+  try { return JSON.parse(localStorage.getItem('finSavToggles')) || {}; } catch { return {}; }
+}
+function finSavSaveToggles(series) {
+  const map = {};
+  for (const s of series) map[s.label] = s.on;
+  try { localStorage.setItem('finSavToggles', JSON.stringify(map)); } catch {}
+}
+
+// Arma las series alineadas a los timestamps del agregado. Las cuentas se
+// evalúan con carry-forward (mismo criterio que finances/index.js#getHistory)
+// para que todas las líneas sean comparables punto a punto.
+function buildFinSavSeries(full) {
+  const totalPts = full.total;
+  const allTs = totalPts.map((p) => p.ts);
+  const series = [];
+  series.push({
+    label: 'Total $U', color: '#4ade80', unit: 'UYU',
+    values: totalPts.map((p) => p.uyu || 0), on: true, bold: true, fill: true,
+  });
+  const hasUsd = totalPts.some((p) => p.usd);
+  if (hasUsd) {
+    series.push({
+      label: 'Total U$S', color: '#fbbf24', unit: 'USD',
+      values: totalPts.map((p) => p.usd || 0), on: false,
+    });
+    if (finUsdRate && finUsdRate.compra) {
+      series.push({
+        label: 'Consolidado $U', color: '#93c5fd', unit: 'UYU', dashed: true,
+        values: totalPts.map((p) => (p.uyu || 0) + (p.usd || 0) * finUsdRate.compra), on: false,
+      });
+    }
+  }
+  let ci = 0;
+  for (const a of (full.accounts || [])) {
+    const pts = a.points || [];
+    const mk = (cur, suffix, unit, on) => {
+      if (!pts.some((p) => p[cur])) return;
+      let j = 0, lastV = 0;
+      const vals = allTs.map((ts) => {
+        while (j < pts.length && pts[j].ts <= ts) {
+          if (pts[j][cur] != null) lastV = pts[j][cur];
+          j++;
+        }
+        return lastV;
+      });
+      series.push({ label: a.name + suffix, color: FIN_SAV_PALETTE[ci++ % FIN_SAV_PALETTE.length], unit, values: vals, on });
+    };
+    mk('uyu', '', 'UYU', true);
+    mk('usd', ' (U$S)', 'USD', false);
+  }
+  // Lo guardado pisa los defaults; series nuevas conservan su estado inicial.
+  const saved = finSavLoadToggles();
+  for (const s of series) if (typeof saved[s.label] === 'boolean') s.on = saved[s.label];
+  return { allTs, series };
+}
+
+function renderFinSavChart() {
+  if (!finSavModalEl || !finSavData) return;
+  const plot = finSavModalEl.querySelector('#fin-sav-plot');
+  const legend = finSavModalEl.querySelector('#fin-sav-legend');
+  const stats = finSavModalEl.querySelector('#fin-sav-stats');
+  if (!plot || !legend || !stats) return;
+  const { allTs, series } = finSavData;
+
+  // Leyenda (siempre, así se puede re-activar una serie apagada).
+  legend.innerHTML = series.map((s, i) => `
+    <button class="fin-sav-chip${s.on ? ' on' : ''}" data-i="${i}" title="${s.on ? 'Ocultar' : 'Mostrar'} ${escapeHtml(s.label)}">
+      <span class="fin-sav-dot" style="background:${s.color}"></span>${escapeHtml(s.label)}
+    </button>`).join('');
+  legend.querySelectorAll('.fin-sav-chip').forEach((b) => {
+    b.addEventListener('click', () => {
+      series[+b.dataset.i].on = !series[+b.dataset.i].on;
+      finSavSaveToggles(series);
+      renderFinSavChart();
+    });
+  });
+
+  const vis = series.filter((s) => s.on);
+  if (!vis.length) {
+    plot.innerHTML = '<div class="fin-chart-empty">Activá al menos una serie en la leyenda.</div>';
+    stats.innerHTML = '';
+    return;
+  }
+
+  // Escala: X proporcional al tiempo real, Y sobre todas las series visibles.
+  const W = 720, H = 260, padY = 10;
+  const all = vis.flatMap((s) => s.values);
+  const { lo, hi, ticks } = finNiceAxis(Math.min(...all), Math.max(...all), 6);
+  const t0 = allTs[0], t1 = allTs[allTs.length - 1];
+  const x = (ts) => ((ts - t0) / ((t1 - t0) || 1)) * W;
+  const y = (v) => H - padY - ((v - lo) / ((hi - lo) || 1)) * (H - padY * 2);
+
+  const grid = ticks.map((v) =>
+    `<line class="fin-grid" x1="0" y1="${y(v).toFixed(1)}" x2="${W}" y2="${y(v).toFixed(1)}"/>`).join('');
+  const yLabels = ticks.map((v) =>
+    `<span class="fin-yaxis-lbl" style="top:${(y(v) / H * 100).toFixed(2)}%">${escapeHtml(finAxisFmt(v))}</span>`).join('');
+  const paths = vis.map((s) => {
+    const pts = s.values.map((v, i) => `${x(allTs[i]).toFixed(1)},${y(v).toFixed(1)}`);
+    let out = '';
+    if (s.fill) {
+      const base = y(lo).toFixed(1);
+      out += `<path d="M ${x(t0).toFixed(1)},${base} L ${pts.join(' L ')} L ${x(t1).toFixed(1)},${base} Z" fill="${s.color}" opacity="0.08" stroke="none"/>`;
+    }
+    out += `<path d="M ${pts.join(' L ')}" fill="none" stroke="${s.color}" stroke-width="${s.bold ? 2 : 1.3}"
+      ${s.dashed ? 'stroke-dasharray="5 4"' : ''} vector-effect="non-scaling-stroke"/>`;
+    return out;
+  }).join('');
+
+  // Eje X: ~6 fechas repartidas en el rango real.
+  const xn = Math.min(6, allTs.length);
+  const xLabels = Array.from({ length: xn }, (_, k) => {
+    const f = k / ((xn - 1) || 1);
+    return `<span style="left:${(f * 100).toFixed(1)}%">${finDateShort(t0 + f * (t1 - t0))}</span>`;
+  }).join('');
+
+  plot.innerHTML = `
+    <div class="fin-plot fin-sav-wrap">
+      <div class="fin-yaxis fin-sav-yaxis">${yLabels}</div>
+      <div class="fin-sav-area" id="fin-sav-area">
+        <svg class="fin-chart-svg fin-sav-svg" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">${grid}${paths}</svg>
+        <div class="fin-sav-cross" hidden></div>
+        <div class="fin-sav-tip" hidden></div>
+      </div>
+    </div>
+    <div class="fin-sav-xaxis">${xLabels}</div>`;
+
+  // Crosshair + tooltip: punto más cercano al cursor en el eje del tiempo.
+  const area = plot.querySelector('#fin-sav-area');
+  const cross = plot.querySelector('.fin-sav-cross');
+  const tip = plot.querySelector('.fin-sav-tip');
+  area.addEventListener('mousemove', (ev) => {
+    const rect = area.getBoundingClientRect();
+    const frac = Math.min(1, Math.max(0, (ev.clientX - rect.left) / (rect.width || 1)));
+    const target = t0 + frac * (t1 - t0);
+    let bi = 0, bd = Infinity;
+    allTs.forEach((ts, i) => {
+      const d = Math.abs(ts - target);
+      if (d < bd) { bd = d; bi = i; }
+    });
+    const px = x(allTs[bi]) / W * 100;
+    cross.style.left = `${px}%`;
+    cross.hidden = false;
+    tip.innerHTML = `
+      <div class="fin-sav-tip-date">${new Date(allTs[bi]).toLocaleDateString('es-UY', { day: '2-digit', month: '2-digit', year: 'numeric' })}</div>` +
+      vis.map((s) => `
+        <div class="fin-sav-tip-row">
+          <span class="fin-sav-dot" style="background:${s.color}"></span>
+          <span class="fin-sav-tip-lbl">${escapeHtml(s.label)}</span>
+          <b>${finHidden ? FIN_MASK : fmtMoney(s.values[bi], s.unit)}</b>
+        </div>`).join('');
+    tip.hidden = false;
+    if (px < 55) { tip.style.left = `calc(${px}% + 12px)`; tip.style.right = 'auto'; }
+    else { tip.style.right = `calc(${100 - px}% + 12px)`; tip.style.left = 'auto'; }
+  });
+  area.addEventListener('mouseleave', () => { cross.hidden = true; tip.hidden = true; });
+
+  // Estadísticas del total en pesos (la serie principal).
+  const tot = series[0].values;
+  const v0 = tot[0], vN = tot[tot.length - 1];
+  const delta = vN - v0;
+  const pct = v0 ? (delta / Math.abs(v0)) * 100 : null;
+  const days = Math.max(1, Math.round((t1 - t0) / 86400000));
+  const M = (v) => finHidden ? FIN_MASK : fmtMoney(v, 'UYU');
+  const deltaTxt = finHidden ? FIN_MASK :
+    `${delta >= 0 ? '+' : '−'}$U ${fmtPlain(Math.abs(delta))}${pct != null ? ` (${delta >= 0 ? '+' : '−'}${Math.abs(pct).toLocaleString('es-UY', { maximumFractionDigits: 1 })}%)` : ''}`;
+  stats.innerHTML = [
+    ['Actual', M(vN), ''],
+    [`Δ en ${days} días`, deltaTxt, delta >= 0 ? 'pos' : 'neg'],
+    ['Máximo', M(Math.max(...tot)), ''],
+    ['Mínimo', M(Math.min(...tot)), ''],
+    ['Promedio', M(tot.reduce((a, b) => a + b, 0) / tot.length), ''],
+    ['Registros', String(tot.length), ''],
+  ].map(([l, v, cls]) => `
+    <div class="fin-sav-stat">
+      <span class="fin-sav-stat-l">${l}</span>
+      <span class="fin-sav-stat-v ${cls}">${v}</span>
+    </div>`).join('');
+}
+
+async function openFinSavModal() {
+  closeFinSavModal();
+  const overlay = document.createElement('div');
+  overlay.className = 'fin-modal';
+  overlay.innerHTML = `
+    <div class="fin-modal-box fin-sav-modal-box">
+      <div class="fin-exp-modal-head">
+        <span class="fin-exp-modal-title">📈 Ahorros en el tiempo</span>
+        <button class="fin-modal-x js-sav-x" title="Cerrar">✕</button>
+      </div>
+      <div id="fin-sav-legend" class="fin-sav-legend"></div>
+      <div id="fin-sav-plot" class="fin-sav-plot"><div class="ai-loading">Cargando historial…</div></div>
+      <div id="fin-sav-stats" class="fin-sav-stats"></div>
+    </div>`;
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) closeFinSavModal(); });
+  overlay.querySelector('.js-sav-x').addEventListener('click', closeFinSavModal);
+  document.addEventListener('keydown', finSavEsc);
+  document.body.appendChild(overlay);
+  finSavModalEl = overlay;
+
+  let full = null;
+  try { full = await window.api.finances.getHistoryFull(); } catch {}
+  if (finSavModalEl !== overlay) return;   // lo cerraron mientras cargaba
+  if (!full || !Array.isArray(full.total) || full.total.length < 2) {
+    overlay.querySelector('#fin-sav-plot').innerHTML =
+      '<div class="fin-chart-empty">Cargá saldos en al menos 2 fechas para ver la evolución.</div>';
+    return;
+  }
+  finSavData = buildFinSavSeries(full);
+  renderFinSavChart();
 }
 
 async function renderFinanzas() {
@@ -2538,6 +4284,60 @@ async function renderFinanzas() {
         finally { clearBtn.disabled = false; }
       });
     }
+
+    // Proyección: guardar el monto proyectado del mes (no se suma al ahorro).
+    const saveProjBtn = card.querySelector('.js-save-proj');
+    if (saveProjBtn) {
+      saveProjBtn.addEventListener('click', async () => {
+        const payload = { accountId: id, uyu: null, usd: null };
+        card.querySelectorAll('.js-proj').forEach((inp) => {
+          const v = inp.value.trim();
+          if (v !== '') payload[inp.dataset.cur.toLowerCase()] = v.replace(/\./g, '').replace(',', '.');
+        });
+        if (payload.uyu == null && payload.usd == null) {
+          setCardStatus(card, 'Ingresá al menos un monto', 'error');
+          return;
+        }
+        saveProjBtn.disabled = true;
+        setCardStatus(card, 'Guardando…');
+        try {
+          const r = await window.api.finances.saveProjection(payload);
+          if (r && r.ok) { await renderFinanzas(); }
+          else setCardStatus(card, (r && r.error) || 'Error', 'error');
+        } catch { setCardStatus(card, 'Error', 'error'); }
+        finally { saveProjBtn.disabled = false; }
+      });
+    }
+
+    const clearProjBtn = card.querySelector('.js-clear-proj');
+    if (clearProjBtn) {
+      clearProjBtn.addEventListener('click', async () => {
+        clearProjBtn.disabled = true;
+        setCardStatus(card, 'Quitando…');
+        try {
+          const r = await window.api.finances.clearProjection(id);
+          if (r && r.ok) { await renderFinanzas(); }
+          else setCardStatus(card, (r && r.error) || 'Error', 'error');
+        } catch { setCardStatus(card, 'Error', 'error'); }
+        finally { clearProjBtn.disabled = false; }
+      });
+    }
+
+    // Inversiones: guardar la descripción de la lista de inversiones.
+    const saveDescBtn = card.querySelector('.js-save-desc');
+    if (saveDescBtn) {
+      saveDescBtn.addEventListener('click', async () => {
+        const text = card.querySelector('.js-desc')?.value || '';
+        saveDescBtn.disabled = true;
+        setCardStatus(card, 'Guardando…');
+        try {
+          const r = await window.api.finances.saveDescription({ accountId: id, text });
+          if (r && r.ok) { await renderFinanzas(); }
+          else setCardStatus(card, (r && r.error) || 'Error', 'error');
+        } catch { setCardStatus(card, 'Error', 'error'); }
+        finally { saveDescBtn.disabled = false; }
+      });
+    }
   });
 
   await renderFinanzasCharts(accounts, expenses);
@@ -2669,7 +4469,111 @@ async function loadSettings() {
     autoLaunchCheckbox.checked = false;
   }
   loadMongoStatus();
+  loadApiStatuses();
 }
+
+// ── Settings: verificador de las APIs del sistema ───────────────
+// Lista todos los servicios externos (clima, cripto, divisas, pelis, series…)
+// con su semáforo en línea / caída y la latencia. Se re-verifica al abrir
+// Settings (si pasó >1 min), con el botón global, o por fila.
+const apisListEl = $('apis-list');
+const apisSummaryEl = $('apis-summary');
+const apisCheckBtn = $('btn-check-apis');
+let apisLastRun = 0;
+
+function apiRowHtml(d) {
+  return `
+    <div class="api-row" data-id="${d.id}" title="${escapeHtml(d.host)} — click para re-verificar">
+      <span class="api-name">
+        <span class="api-name-line">${escapeHtml(d.name)} <span class="mkt-src">· ${escapeHtml(d.provider)}</span></span>
+        ${d.url ? `<a class="api-link" data-url="${escapeHtml(d.url)}" title="Abrir en el navegador">${escapeHtml(d.url.replace(/^https?:\/\//, ''))}</a>` : ''}
+        ${Array.isArray(d.endpoints) && d.endpoints.length
+          ? `<span class="api-endpoints" title="${escapeHtml(d.endpoints.join('\n'))}">${escapeHtml(d.endpoints.join(' · '))}</span>` : ''}
+      </span>
+      <span class="api-ms" data-ms></span>
+      <span class="db-status checking" data-st>
+        <span class="db-dot"></span>
+        <span data-st-text>Verificando…</span>
+      </span>
+    </div>`;
+}
+
+function paintApiChecking(id) {
+  const row = apisListEl.querySelector(`.api-row[data-id="${id}"]`);
+  if (!row) return;
+  row.querySelector('[data-st]').className = 'db-status checking';
+  row.querySelector('[data-st-text]').textContent = 'Verificando…';
+  row.querySelector('[data-ms]').textContent = '';
+}
+
+function paintApiResult(r) {
+  const row = apisListEl.querySelector(`.api-row[data-id="${r.id}"]`);
+  if (!row) return;
+  const st = row.querySelector('[data-st]');
+  const txt = row.querySelector('[data-st-text]');
+  const ms = row.querySelector('[data-ms]');
+  if (r.ok) {
+    st.className = 'db-status connected';
+    txt.textContent = r.note || 'En línea';   // status pages: "incidente menor"
+    ms.textContent = r.ms != null ? `${r.ms} ms` : '';
+    row.title = `${r.host} — click para re-verificar`;
+  } else {
+    st.className = 'db-status disconnected';
+    txt.textContent = r.error === 'no configurado' ? 'No configurado' : 'Caída';
+    ms.textContent = '';
+    row.title = `${r.host}${r.error ? ` — ${r.error}` : ''} — click para re-verificar`;
+  }
+}
+
+async function loadApiStatuses(force = false) {
+  if (!apisListEl) return;
+  if (!force && apisLastRun && Date.now() - apisLastRun < 60 * 1000) return;   // fresco
+  apisLastRun = Date.now();
+  if (apisCheckBtn) apisCheckBtn.disabled = true;
+  if (apisSummaryEl) apisSummaryEl.textContent = '';
+  try {
+    if (!apisListEl.children.length) {
+      // Primera vez: armar las filas desde el registro y cablear el re-check por
+      // fila. Dos grupos: las APIs que consume el widget y las status pages de
+      // servicios de terceros (statuspage.io).
+      const defs = await window.api.apiStatus.defs();
+      const apis = (defs || []).filter((d) => d.group !== 'status');
+      const statuses = (defs || []).filter((d) => d.group === 'status');
+      apisListEl.innerHTML = apis.map(apiRowHtml).join('') +
+        (statuses.length ? `<div class="apis-group-title">Status de servicios</div>` + statuses.map(apiRowHtml).join('') : '');
+      apisListEl.querySelectorAll('.api-row').forEach((row) => {
+        row.addEventListener('click', async () => {
+          paintApiChecking(row.dataset.id);
+          try {
+            const rs = await window.api.apiStatus.check([row.dataset.id]);
+            (rs || []).forEach(paintApiResult);
+          } catch {}
+        });
+        // El link abre la API en el navegador sin disparar el re-check de la fila.
+        const link = row.querySelector('.api-link');
+        if (link) link.addEventListener('click', (e) => {
+          e.stopPropagation();
+          window.api.openExternal(link.dataset.url);
+        });
+      });
+      adjustWindowSize();
+    } else {
+      apisListEl.querySelectorAll('.api-row').forEach((row) => paintApiChecking(row.dataset.id));
+    }
+    const results = await window.api.apiStatus.check();
+    (results || []).forEach(paintApiResult);
+    if (apisSummaryEl && Array.isArray(results) && results.length) {
+      const up = results.filter((r) => r.ok).length;
+      apisSummaryEl.textContent = `${up}/${results.length} en línea`;
+    }
+  } catch {
+    if (apisSummaryEl) apisSummaryEl.textContent = 'No se pudo verificar';
+  } finally {
+    if (apisCheckBtn) apisCheckBtn.disabled = false;
+  }
+}
+
+if (apisCheckBtn) apisCheckBtn.addEventListener('click', () => loadApiStatuses(true));
 
 // ── Finanzas DB: Mongo connection indicator + manual sync ──────
 const mongoStatusEl = $('mongo-status');
@@ -2775,12 +4679,25 @@ autoLaunchCheckbox.addEventListener('change', async () => {
   refreshMarkets();
   setInterval(refreshMarkets, MARKETS_INTERVAL_MS);
 
+  refreshStocks();                                // acciones/ETFs (Finnhub)
+  setInterval(refreshStocks, MARKETS_INTERVAL_MS);
+
+  refreshHolidays();                              // feriados: 2 veces al día alcanza
+  setInterval(refreshHolidays, 12 * 60 * 60 * 1000);
+
   refreshAI();
   setInterval(refreshAI, AI_INTERVAL_MS);
 
   loadSpeedtest();
 
   initYify();   // health check de la API de YIFY + primeras películas
+  initEztv();   // ídem para la API de EZTV (tab Torrents Series)
+
+  refreshEztvDash();                              // mitad derecha del card "Últimos estrenos"
+  setInterval(refreshEztvDash, YIFY_INTERVAL_MS);
+
+  refreshTvmaze();                                // próximos episodios (favoritos)
+  setInterval(refreshTvmaze, 6 * 60 * 60 * 1000);
 
   renderFinanzas();
 
@@ -2789,8 +4706,13 @@ autoLaunchCheckbox.addEventListener('change', async () => {
     refreshSystem();
     refreshWeather();
     refreshMarkets();
+    refreshStocks();
+    refreshHolidays();
     refreshAI();
+    refreshTvmaze();
+    refreshEztvDash();
     yifyOk ? refreshYifyLatest() : initYify();   // si estaba caída, re-chequea
+    if (!ezOk) initEztv();                       // ídem EZTV
   });
 
   adjustWindowSize();

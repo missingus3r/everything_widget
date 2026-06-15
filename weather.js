@@ -57,13 +57,31 @@ function getJson(url, timeoutMs = 6000) {
   });
 }
 
+// Calidad del aire (Open-Meteo Air Quality, mismo proveedor, sin key).
+// Falla suave: si no responde, el clima sale igual sin la línea de AQI.
+async function fetchAirQuality(latitude, longitude) {
+  const url = `https://air-quality-api.open-meteo.com/v1/air-quality?latitude=${latitude}&longitude=${longitude}` +
+    `&current=us_aqi,uv_index,pm2_5,pm10&timezone=auto`;
+  const data = await getJson(url);
+  const c = data.current || {};
+  return {
+    aqi: typeof c.us_aqi === 'number' ? c.us_aqi : null,
+    uv: typeof c.uv_index === 'number' ? c.uv_index : null,
+    pm25: typeof c.pm2_5 === 'number' ? c.pm2_5 : null,
+    pm10: typeof c.pm10 === 'number' ? c.pm10 : null,
+  };
+}
+
 async function fetchWeather({ latitude, longitude, label }) {
   const url = `https://api.open-meteo.com/v1/forecast?latitude=${latitude}&longitude=${longitude}` +
     `&current=temperature_2m,apparent_temperature,relative_humidity_2m,weather_code,wind_speed_10m,is_day` +
     `&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,sunrise,sunset` +
     `&timezone=auto&forecast_days=2`;
 
-  const data = await getJson(url);
+  const [data, air] = await Promise.all([
+    getJson(url),
+    fetchAirQuality(latitude, longitude).catch(() => null),
+  ]);
   const cur = data.current || {};
   const d = data.daily || {};
   const [curEmoji, curLabel] = describe(cur.weather_code);
@@ -93,6 +111,7 @@ async function fetchWeather({ latitude, longitude, label }) {
     },
     today: day(0),
     tomorrow: day(1),
+    air,
     fetchedAt: Date.now(),
   };
 }
