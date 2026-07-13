@@ -18,6 +18,7 @@ const DB_PATH = path.join(__dirname, 'favorites.sqlite');
 const WASM_PATH = path.join(__dirname, 'node_modules', 'sql.js', 'dist');
 const COLLECTION = 'favorites';            // películas (YIFY)
 const SERIES_COLLECTION = 'series_favorites';  // episodios (EZTV)
+const FOLDERS_COLLECTION = 'fav_folders';  // carpetas de películas favoritas
 
 let db = null;
 
@@ -37,6 +38,13 @@ const SCHEMA = `
     cover_mime TEXT,
     cast      TEXT,                       -- JSON array [{ name, character }]
     torrents  TEXT NOT NULL,              -- JSON array con calidad/tamaño/magnet
+    folder_id INTEGER,                    -- carpeta contenedora (NULL = raíz)
+    added_at  INTEGER NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS fav_folders (
+    id        INTEGER PRIMARY KEY,        -- = _id en Mongo (Date.now() al crear)
+    name      TEXT    NOT NULL,
+    parent_id INTEGER,                    -- carpeta contenedora (NULL = raíz)
     added_at  INTEGER NOT NULL
   );
   CREATE TABLE IF NOT EXISTS series_favorites (
@@ -70,10 +78,22 @@ function ensure() {
       ? new SQL.Database(fs.readFileSync(DB_PATH))
       : new SQL.Database();
     db.run(SCHEMA);
+    migrate();
     persist();
     await reconcile();   // nunca tira: sin Mongo queda SQLite-only
   })();
   return readyPromise;
+}
+
+// Migraciones sobre bases ya creadas: CREATE TABLE IF NOT EXISTS no agrega
+// columnas nuevas a una tabla vieja, así que folder_id se añade a mano.
+function migrate() {
+  const colsOf = (t) => {
+    const res = db.exec(`PRAGMA table_info(${t})`);
+    return res.length ? res[0].values.map((r) => r[1]) : [];
+  };
+  if (!colsOf('favorites').includes('folder_id')) db.run('ALTER TABLE favorites ADD COLUMN folder_id INTEGER');
+  if (!colsOf('fav_folders').includes('parent_id')) db.run('ALTER TABLE fav_folders ADD COLUMN parent_id INTEGER');
 }
 
 function persist() {
@@ -84,7 +104,11 @@ async function favCols() {
   if (!mongo.isEnabled()) return null;
   const dbh = await mongo.connect();   // null si el cluster no responde
   return dbh
-    ? { movies: dbh.collection(COLLECTION), series: dbh.collection(SERIES_COLLECTION) }
+    ? {
+        movies: dbh.collection(COLLECTION),
+        series: dbh.collection(SERIES_COLLECTION),
+        folders: dbh.collection(FOLDERS_COLLECTION),
+      }
     : null;
 }
 
@@ -112,6 +136,7 @@ function rowToFav(r) {
     trailer: r.trailer || null, url: r.url || null,
     coverUrl: r.cover_url || null, cover: toBuf(r.cover), coverMime: r.cover_mime || null,
     cast: parse(r.cast, []), torrents: parse(r.torrents, []),
+    folderId: r.folder_id ?? null,
     addedAt: r.added_at,
   };
 }
@@ -124,6 +149,7 @@ function docToFav(d) {
     trailer: d.trailer || null, url: d.url || null,
     coverUrl: d.cover_url || null, cover: toBuf(d.cover), coverMime: d.cover_mime || null,
     cast: Array.isArray(d.cast) ? d.cast : [], torrents: Array.isArray(d.torrents) ? d.torrents : [],
+    folderId: d.folder_id ?? null,
     addedAt: d.added_at || Date.now(),
   };
 }
@@ -138,6 +164,7 @@ function favToDoc(f) {
     trailer: f.trailer, url: f.url,
     cover_url: f.coverUrl, cover: f.cover, cover_mime: f.coverMime,
     cast: f.cast, torrents: f.torrents,
+    folder_id: f.folderId ?? null,
     added_at: f.addedAt,
   };
 }
@@ -145,8 +172,8 @@ function favToDoc(f) {
 function writeRow(f) {
   db.run(
     'INSERT OR REPLACE INTO favorites ' +
-    '(id, title, year, rating, runtime, genres, synopsis, trailer, url, cover_url, cover, cover_mime, cast, torrents, added_at) ' +
-    'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    '(id, title, year, rating, runtime, genres, synopsis, trailer, url, cover_url, cover, cover_mime, cast, torrents, folder_id, added_at) ' +
+    'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
     [
       Number(f.id), String(f.title),
       f.year == null ? null : Number(f.year),
@@ -156,6 +183,7 @@ function writeRow(f) {
       f.trailer || null, f.url || null,
       f.coverUrl || null, f.cover, f.coverMime || null,
       JSON.stringify(f.cast || []), JSON.stringify(f.torrents || []),
+      f.folderId == null ? null : Number(f.folderId),
       Number(f.addedAt),
     ]
   );
@@ -165,6 +193,28 @@ function readRows() {
   const stmt = db.prepare('SELECT * FROM favorites ORDER BY added_at DESC');
   const rows = [];
   while (stmt.step()) rows.push(rowToFav(stmt.getAsObject()));
+  stmt.free();
+  return rows;
+}
+
+// ── Carpetas de películas ────────────────────────────────────────────────────
+// Folder canónico: { id, name, addedAt }. _id en Mongo = id numérico.
+
+function rowToFolder(r) { return { id: r.id, name: r.name, parentId: r.parent_id ?? null, addedAt: r.added_at }; }
+function docToFolder(d) { return { id: Number(d._id), name: d.name || '', parentId: d.parent_id ?? null, addedAt: d.added_at || Date.now() }; }
+function folderToDoc(f) { return { _id: f.id, name: f.name, parent_id: f.parentId ?? null, added_at: f.addedAt }; }
+
+function writeFolderRow(f) {
+  db.run(
+    'INSERT OR REPLACE INTO fav_folders (id, name, parent_id, added_at) VALUES (?, ?, ?, ?)',
+    [Number(f.id), String(f.name), f.parentId == null ? null : Number(f.parentId), Number(f.addedAt)]
+  );
+}
+
+function readFolderRows() {
+  const stmt = db.prepare('SELECT * FROM fav_folders ORDER BY added_at ASC');
+  const rows = [];
+  while (stmt.step()) rows.push(rowToFolder(stmt.getAsObject()));
   stmt.free();
   return rows;
 }
@@ -259,15 +309,30 @@ async function reconcile() {
     };
     await seedUp(cols.movies, readRows(), favToDoc);
     await seedUp(cols.series, readSeriesRows(), sfavToDoc);
-    const [movieDocs, seriesDocs] = await Promise.all([
+    await seedUp(cols.folders, readFolderRows(), folderToDoc);
+    const [movieDocs, seriesDocs, folderDocs] = await Promise.all([
       cols.movies.find({}).toArray(),
       cols.series.find({}).toArray(),
+      cols.folders.find({}).toArray(),
     ]);
+    // Solo conservamos folder_id que apunte a una carpeta existente (evita
+    // huérfanos si una carpeta se borró en otra máquina).
+    const folderIds = new Set(folderDocs.map((d) => Number(d._id)));
     db.run('BEGIN TRANSACTION');
     try {
       db.run('DELETE FROM favorites');
       db.run('DELETE FROM series_favorites');
-      movieDocs.forEach((d) => writeRow(docToFav(d)));
+      db.run('DELETE FROM fav_folders');
+      folderDocs.forEach((d) => {
+        const f = docToFolder(d);
+        if (f.parentId != null && !folderIds.has(Number(f.parentId))) f.parentId = null;
+        writeFolderRow(f);
+      });
+      movieDocs.forEach((d) => {
+        const f = docToFav(d);
+        if (f.folderId != null && !folderIds.has(Number(f.folderId))) f.folderId = null;
+        writeRow(f);
+      });
       seriesDocs.forEach((d) => writeSeriesRow(docToSfav(d)));
       db.run('COMMIT');
     } catch (err) {
@@ -275,7 +340,7 @@ async function reconcile() {
       throw err;
     }
     persist();
-    console.log(`[favorites] synced from Mongo: ${movieDocs.length} películas, ${seriesDocs.length} series`);
+    console.log(`[favorites] synced from Mongo: ${movieDocs.length} películas, ${seriesDocs.length} series, ${folderDocs.length} carpetas`);
   } catch (e) {
     console.warn('[favorites] mongo sync failed, SQLite-only:', e.message);
   }
@@ -330,6 +395,8 @@ async function add(movie) {
     } catch {} // sin imagen: el favorito igual se guarda
   }
 
+  // Re-guardar un favorito no debe sacarlo de su carpeta: si ya existe,
+  // conservamos su folder_id salvo que el caller pida uno explícito.
   const fav = {
     id: Number(movie.id), title: String(movie.title),
     year: movie.year == null ? null : Number(movie.year),
@@ -341,6 +408,7 @@ async function add(movie) {
     coverUrl, cover, coverMime,
     cast: Array.isArray(movie.cast) ? movie.cast : [],
     torrents: Array.isArray(movie.torrents) ? movie.torrents : [],
+    folderId: movie.folderId != null ? Number(movie.folderId) : currentFolderId(Number(movie.id)),
     addedAt: Date.now(),
   };
 
@@ -384,8 +452,87 @@ async function list() {
       ? `data:${f.coverMime || 'image/jpeg'};base64,${f.cover.toString('base64')}`
       : (f.coverUrl || null),
     cast: f.cast, torrents: f.torrents,
+    folderId: f.folderId,
     addedAt: f.addedAt,
   }));
+}
+
+// ── Carpetas: API pública ────────────────────────────────────────────────────
+// El folder_id que ya tiene un favorito (o null). Lo usa add() para no sacar
+// una película de su carpeta al re-guardarla.
+function currentFolderId(movieId) {
+  const stmt = db.prepare('SELECT folder_id FROM favorites WHERE id = ?');
+  stmt.bind([Number(movieId)]);
+  const id = stmt.step() ? (stmt.getAsObject().folder_id ?? null) : null;
+  stmt.free();
+  return id;
+}
+
+async function listFolders() {
+  await ensure();
+  return readFolderRows();
+}
+
+// Crea una carpeta (opcionalmente dentro de otra) y devuelve su registro. El id
+// es un timestamp (único de sobra para un widget personal) que sirve de _id en
+// Mongo. parentId null = carpeta en la raíz.
+async function createFolder(name, parentId = null) {
+  await ensure();
+  const clean = String(name || '').trim();
+  if (!clean) throw new Error('nombre vacío');
+  const folder = { id: Date.now(), name: clean, parentId: parentId == null ? null : Number(parentId), addedAt: Date.now() };
+  writeFolderRow(folder);
+  persist();
+  try {
+    const cols = await favCols();
+    if (cols) await cols.folders.updateOne({ _id: folder.id }, { $set: folderToDoc(folder) }, { upsert: true });
+  } catch (e) { console.warn('[favorites] mongo folder create failed:', e.message); }
+  return folder;
+}
+
+async function renameFolder(folderId, name) {
+  await ensure();
+  const clean = String(name || '').trim();
+  if (!clean) throw new Error('nombre vacío');
+  db.run('UPDATE fav_folders SET name = ? WHERE id = ?', [clean, Number(folderId)]);
+  persist();
+  try {
+    const cols = await favCols();
+    if (cols) await cols.folders.updateOne({ _id: Number(folderId) }, { $set: { name: clean } });
+  } catch (e) { console.warn('[favorites] mongo folder rename failed:', e.message); }
+}
+
+// Borra la carpeta y devuelve su contenido a la RAÍZ: las películas que tenía
+// adentro y sus subcarpetas quedan sueltas en el nivel superior. Nunca se borra
+// una película de favoritos — solo se elimina la carpeta en sí.
+async function deleteFolder(folderId) {
+  await ensure();
+  const fid = Number(folderId);
+  db.run('UPDATE favorites SET folder_id = NULL WHERE folder_id = ?', [fid]);
+  db.run('UPDATE fav_folders SET parent_id = NULL WHERE parent_id = ?', [fid]);
+  db.run('DELETE FROM fav_folders WHERE id = ?', [fid]);
+  persist();
+  try {
+    const cols = await favCols();
+    if (cols) {
+      await cols.movies.updateMany({ folder_id: fid }, { $set: { folder_id: null } });
+      await cols.folders.updateMany({ parent_id: fid }, { $set: { parent_id: null } });
+      await cols.folders.deleteOne({ _id: fid });
+    }
+  } catch (e) { console.warn('[favorites] mongo folder delete failed:', e.message); }
+}
+
+// Mueve una película a una carpeta (folderId null = raíz).
+async function moveToFolder(movieId, folderId) {
+  await ensure();
+  const mid = Number(movieId);
+  const fid = folderId == null ? null : Number(folderId);
+  db.run('UPDATE favorites SET folder_id = ? WHERE id = ?', [fid, mid]);
+  persist();
+  try {
+    const cols = await favCols();
+    if (cols) await cols.movies.updateOne({ _id: mid }, { $set: { folder_id: fid } });
+  } catch (e) { console.warn('[favorites] mongo move failed:', e.message); }
 }
 
 // ── Favoritos de series (episodios EZTV) ─────────────────────────────────────
@@ -479,6 +626,7 @@ async function syncNow() {
 
 module.exports = {
   add, remove, getIds, list,
+  listFolders, createFolder, renameFolder, deleteFolder, moveToFolder,
   addSeries, removeSeries, getSeriesIds, listSeries,
   syncNow,
 };

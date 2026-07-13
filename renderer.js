@@ -169,7 +169,7 @@ function setGauge(arcEl, centerEl, subEl, pct, centerText, subText) {
   if (arcEl) {
     arcEl.style.strokeDasharray = `${GAUGE_CIRCUMFERENCE}`;
     arcEl.style.strokeDashoffset = `${GAUGE_CIRCUMFERENCE * (1 - p / 100)}`;
-    arcEl.style.stroke = pctColor(p);
+    // Color fijo de marca por gauge (CPU violeta / RAM cian), definido en CSS.
   }
   if (centerEl) centerEl.textContent = centerText;
   if (subEl) subEl.textContent = subText || '';
@@ -630,6 +630,14 @@ let yifyTimerStarted = false;
 // muerte de la API. favIds pinta los corazones; yifyFavsMode es la sección ♥.
 let yifyFavsMode = false;
 let favIds = new Set();
+// Carpetas de favoritos: un explorador simple dentro de la sección ♥.
+// favAll = todas las pelis guardadas; favFolders = carpetas; favFolderId =
+// carpeta abierta (null = raíz, muestra carpetas + pelis sin carpeta).
+let favAll = [];
+let favFolders = [];
+let favFolderId = null;
+let favCreating = false;    // input "nueva carpeta" abierto
+let favDragId = null;       // id de la peli que se está arrastrando
 
 function setYifyStatus(kind, text) {
   const wrap = $('yify-status'), txt = $('yify-status-text');
@@ -879,6 +887,7 @@ function renderYifyMovies(movies) {
   else if (yifyView === 'list') renderYifyTable(el);
   else renderYifyCards(el);
   attachYifyClickHandlers(el);
+  if (yifyFavsMode) enableFavDnD(el);   // arrastrar películas a carpetas
   adjustWindowSize();
 }
 
@@ -982,14 +991,23 @@ async function loadYifyFavs() {
   const pager = $('yify-pager');
   if (pager) pager.innerHTML = '';
   if (el) { el.className = 'yify-grid'; el.innerHTML = `<div class="ai-loading">Cargando favoritos…</div>`; }
-  let favs = [];
+  let favs = [], folders = [];
   try {
-    const r = await window.api.favs.list();
+    const [r, fs] = await Promise.all([window.api.favs.list(), window.api.favs.folders()]);
     if (Array.isArray(r)) favs = r;
+    if (Array.isArray(fs)) folders = fs;
   } catch {}
   if (!yifyFavsMode) return;   // salieron de la sección mientras cargaba
+  favAll = favs;
+  favFolders = folders;
   favIds = new Set(favs.map((f) => f.id));
-  if (!favs.length) {
+  // Si la carpeta abierta ya no existe (borrada en otra máquina), volvé a raíz.
+  if (favFolderId != null && !favFolders.some((f) => f.id === favFolderId)) favFolderId = null;
+  renderFavBar();
+  // En cada nivel mostramos las pelis de esa carpeta (raíz = sin carpeta).
+  const shown = favAll.filter((f) => (f.folderId ?? null) === favFolderId);
+  const subs = favFolders.filter((f) => (f.parentId ?? null) === favFolderId);
+  if (!favAll.length && !favFolders.length) {
     if (el) {
       el.className = 'yify-grid';
       el.innerHTML = `<div class="ai-loading">Sin favoritos todavía — tocá ♡ en una película para guardarla acá.</div>`;
@@ -997,7 +1015,305 @@ async function loadYifyFavs() {
     adjustWindowSize();
     return;
   }
-  renderYifyMovies(favs);
+  if (!shown.length) {
+    yifyShown = [];
+    if (el) {
+      el.className = 'yify-grid';
+      // Con subcarpetas visibles arriba no hace falta un cartel grande.
+      el.innerHTML = subs.length
+        ? `<div class="ai-loading">Abrí una subcarpeta, o arrastrá películas a esta carpeta.</div>`
+        : (favFolderId != null
+          ? `<div class="ai-loading">Carpeta vacía — arrastrá películas acá, o creá una subcarpeta arriba.</div>`
+          : `<div class="ai-loading">Todas tus películas están en carpetas. Abrí una arriba.</div>`);
+    }
+    adjustWindowSize();
+    return;
+  }
+  renderYifyMovies(shown);
+}
+
+// Ruta desde la raíz hasta la carpeta abierta (para el breadcrumb).
+function favPath() {
+  const byId = new Map(favFolders.map((f) => [f.id, f]));
+  const path = [];
+  let id = favFolderId;
+  const guard = new Set();   // corta ciclos por si un parent quedó mal
+  while (id != null && byId.has(id) && !guard.has(id)) {
+    guard.add(id);
+    const f = byId.get(id);
+    path.unshift(f);
+    id = f.parentId ?? null;
+  }
+  return path;
+}
+
+// Cantidad total de items dentro de una carpeta (pelis directas + subcarpetas).
+function favFolderCount(fid) {
+  const movies = favAll.filter((f) => (f.folderId ?? null) === fid).length;
+  const subs = favFolders.filter((f) => (f.parentId ?? null) === fid).length;
+  return { movies, subs };
+}
+
+// Barra de carpetas de Favoritos: breadcrumb navegable + botón "Nueva carpeta"
+// (crea en el nivel actual) + las subcarpetas del nivel (como destinos de
+// arrastre). Renombrar/eliminar de la carpeta abierta a la derecha. Cada nivel
+// muestra sus subcarpetas y, en la grilla, sus películas. Solo en modo Favoritos.
+function renderFavBar() {
+  const bar = $('yify-fav-bar');
+  if (!bar) return;
+  if (!yifyFavsMode) { bar.hidden = true; bar.innerHTML = ''; return; }
+  bar.hidden = false;
+
+  const path = favPath();
+  const current = path.length ? path[path.length - 1] : null;
+  if (favFolderId != null && !current) { favFolderId = null; renderFavBar(); return; }
+
+  // Breadcrumb: 🏠 Todas › … › carpeta actual. Cada tramo navega y recibe drops.
+  const crumbs = `<button class="yify-fav-crumb-btn js-fav-crumb" data-fid="" title="Raíz — soltá una película acá para sacarla de toda carpeta">🏠 Todas</button>`
+    + path.map((f) => `<span class="yify-fav-sep">›</span><button class="yify-fav-crumb-btn js-fav-crumb${f.id === favFolderId ? ' current' : ''}" data-fid="${f.id}" title="${escapeHtml(f.name)}">${escapeHtml(f.name)}</button>`).join('');
+
+  const subs = favFolders.filter((f) => (f.parentId ?? null) === favFolderId);
+  const tiles = subs.map((f) => {
+    const c = favFolderCount(f.id);
+    const badge = c.subs
+      ? `<span class="yify-fav-count" title="${c.movies} película(s), ${c.subs} subcarpeta(s)">${c.movies} · 📁${c.subs}</span>`
+      : `<span class="yify-fav-count">${c.movies}</span>`;
+    return `
+    <div class="yify-fav-folder" data-fid="${f.id}" title="${escapeHtml(f.name)} — abrí, o soltá una película acá">
+      <span class="yify-fav-folder-ico">📁</span>
+      <span class="yify-fav-folder-name js-fav-rename">${escapeHtml(f.name)}</span>
+      ${badge}
+      <button class="yify-fav-folder-btn js-fav-edit" title="Renombrar">✎</button>
+      <button class="yify-fav-folder-btn js-fav-del" title="Eliminar carpeta">✕</button>
+    </div>`;
+  }).join('');
+
+  const newLabel = favFolderId != null ? '＋ Subcarpeta' : '＋ Nueva carpeta';
+  bar.innerHTML = `
+    <div class="yify-fav-crumbs">${crumbs}</div>
+    <div class="yify-fav-newwrap">
+      ${favCreating
+        ? `<input class="fin-input yify-fav-newinput" id="fav-new-input" placeholder="Nombre de la carpeta… (Enter)" autocomplete="off" maxlength="40">`
+        : `<button class="fin-btn yify-fav-newbtn js-fav-new" title="Crear una carpeta en este nivel">${newLabel}</button>`}
+    </div>
+    ${favFolders.length ? `<button class="yify-fav-tool js-fav-tree" title="Ver el árbol completo de carpetas">🗂 Árbol</button>` : ''}
+    ${current ? `
+      <span class="yify-fav-bar-spacer"></span>
+      <button class="yify-fav-tool js-fav-edit-cur" title="Renombrar «${escapeHtml(current.name)}»">✎ Renombrar</button>
+      <button class="yify-fav-del js-fav-del-cur" title="Eliminar carpeta (su contenido vuelve a la raíz)">🗑 Eliminar</button>` : ''}
+    <div class="yify-fav-folders">${tiles || (favCreating ? '' : `<span class="yify-fav-empty">${favFolderId != null ? 'Sin subcarpetas — creá una o arrastrá películas acá' : 'Creá una carpeta y arrastrá películas adentro ↓'}</span>`)}</div>`;
+
+  // Breadcrumb: navegación + drop.
+  bar.querySelectorAll('.js-fav-crumb').forEach((btn) => {
+    const fid = btn.dataset.fid === '' ? null : +btn.dataset.fid;
+    btn.addEventListener('click', () => { if (fid !== favFolderId) { favFolderId = fid; loadYifyFavs(); } });
+    wireFavDropTarget(btn, fid);
+  });
+
+  // Nueva carpeta / subcarpeta (input inline).
+  if (favCreating) {
+    const input = bar.querySelector('#fav-new-input');
+    input.focus();
+    let done = false;
+    const parent = favFolderId;   // capturado: crea en el nivel actual
+    const commit = async () => {
+      if (done) return; done = true;
+      const name = input.value.trim();
+      favCreating = false;
+      if (name) await window.api.favs.createFolder(name, parent);
+      loadYifyFavs();
+    };
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') commit();
+      else if (e.key === 'Escape') { done = true; favCreating = false; renderFavBar(); }
+    });
+    input.addEventListener('blur', () => { if (!done && !input.value.trim()) { favCreating = false; renderFavBar(); } });
+  } else {
+    const nb = bar.querySelector('.js-fav-new');
+    if (nb) nb.addEventListener('click', () => { favCreating = true; renderFavBar(); });
+  }
+
+  // Árbol completo.
+  const treeBtn = bar.querySelector('.js-fav-tree');
+  if (treeBtn) treeBtn.addEventListener('click', openFavTreeModal);
+
+  // Herramientas de la carpeta abierta.
+  if (current) {
+    bar.querySelector('.js-fav-del-cur').addEventListener('click', () => deleteFavFolder(current));
+    bar.querySelector('.js-fav-edit-cur').addEventListener('click', () => {
+      const nameEl = bar.querySelector(`.js-fav-crumb.current`);
+      if (nameEl) startRenameFolder(current, nameEl);
+    });
+  }
+
+  // Tiles de subcarpeta.
+  bar.querySelectorAll('.yify-fav-folder').forEach((tile) => {
+    const fid = +tile.dataset.fid;
+    const folder = favFolders.find((f) => f.id === fid);
+    tile.addEventListener('click', (e) => {
+      if (e.target.closest('.js-fav-del') || e.target.closest('.js-fav-edit') || e.target.closest('input')) return;
+      favFolderId = fid; loadYifyFavs();
+    });
+    tile.querySelector('.js-fav-del').addEventListener('click', (e) => { e.stopPropagation(); deleteFavFolder(folder); });
+    const nameEl = tile.querySelector('.js-fav-rename');
+    tile.querySelector('.js-fav-edit').addEventListener('click', (e) => { e.stopPropagation(); startRenameFolder(folder, nameEl); });
+    nameEl.addEventListener('dblclick', (e) => { e.stopPropagation(); startRenameFolder(folder, nameEl); });
+    wireFavDropTarget(tile, fid);
+  });
+}
+
+// Convierte un span de nombre en un input para renombrar en el lugar.
+function startRenameFolder(folder, nameEl) {
+  const input = document.createElement('input');
+  input.className = 'fin-input yify-fav-renameinput';
+  input.value = folder.name;
+  input.maxLength = 40;
+  nameEl.replaceWith(input);
+  input.focus();
+  input.select();
+  let done = false;
+  const commit = async (save) => {
+    if (done) return; done = true;
+    const name = input.value.trim();
+    if (save && name && name !== folder.name) await window.api.favs.renameFolder(folder.id, name);
+    loadYifyFavs();
+  };
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') commit(true);
+    else if (e.key === 'Escape') commit(false);
+    e.stopPropagation();
+  });
+  input.addEventListener('click', (e) => e.stopPropagation());
+  input.addEventListener('blur', () => commit(true));
+}
+
+async function deleteFavFolder(folder) {
+  const n = favAll.filter((f) => (f.folderId ?? null) === folder.id).length;
+  const subs = favFolders.filter((f) => (f.parentId ?? null) === folder.id).length;
+  const parts = [];
+  if (n) parts.push(`${n} película${n === 1 ? '' : 's'}`);
+  if (subs) parts.push(`${subs} subcarpeta${subs === 1 ? '' : 's'}`);
+  const msg = parts.length
+    ? `¿Eliminar la carpeta «${folder.name}»? Sus ${parts.join(' y ')} vuelven a la raíz (nada se borra de favoritos).`
+    : `¿Eliminar la carpeta «${folder.name}»?`;
+  if (!(await finConfirm(msg))) return;
+  await window.api.favs.deleteFolder(folder.id);
+  if (favFolderId === folder.id) favFolderId = null;
+  loadYifyFavs();
+}
+
+// Modal con el árbol completo de carpetas. Clic en una la abre; clic en la raíz
+// vuelve al nivel superior. Solo lectura (crear/borrar/mover se hacen en la barra).
+let favTreeEl = null;
+function closeFavTree() {
+  if (favTreeEl) { favTreeEl.remove(); favTreeEl = null; }
+  document.removeEventListener('keydown', favTreeEsc);
+}
+function favTreeEsc(e) { if (e.key === 'Escape') closeFavTree(); }
+function openFavTreeModal() {
+  closeFavTree();
+  const childrenOf = (pid) => favFolders.filter((f) => (f.parentId ?? null) === pid);
+  const movieCount = (fid) => favAll.filter((f) => (f.folderId ?? null) === fid).length;
+  const guard = new Set();   // corta ciclos accidentales
+  const renderNodes = (pid, depth) => childrenOf(pid).map((f) => {
+    if (guard.has(f.id)) return '';
+    guard.add(f.id);
+    const c = movieCount(f.id);
+    return `
+    <div class="fav-tree-row${f.id === favFolderId ? ' current' : ''}" data-fid="${f.id}" style="padding-left:${depth * 18 + 12}px">
+      <span class="fav-tree-ico">📁</span>
+      <span class="fav-tree-name">${escapeHtml(f.name)}</span>
+      <span class="yify-fav-count">${c}</span>
+    </div>` + renderNodes(f.id, depth + 1);
+  }).join('');
+
+  const overlay = document.createElement('div');
+  overlay.className = 'fin-modal';
+  overlay.innerHTML = `
+    <div class="fin-modal-box fav-tree-box">
+      <div class="fin-exp-modal-head">
+        <span class="fin-exp-modal-title">🗂 Árbol de carpetas</span>
+        <button class="fin-modal-x js-tree-x" title="Cerrar">✕</button>
+      </div>
+      <div class="fav-tree">
+        <div class="fav-tree-row${favFolderId === null ? ' current' : ''}" data-fid="" style="padding-left:12px">
+          <span class="fav-tree-ico">🏠</span>
+          <span class="fav-tree-name">Todas (raíz)</span>
+          <span class="yify-fav-count">${movieCount(null)}</span>
+        </div>
+        ${renderNodes(null, 1) || '<div class="yify-fav-empty" style="padding:12px">Sin carpetas todavía</div>'}
+      </div>
+    </div>`;
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) closeFavTree(); });
+  overlay.querySelector('.js-tree-x').addEventListener('click', closeFavTree);
+  overlay.querySelectorAll('.fav-tree-row').forEach((row) => {
+    row.addEventListener('click', () => {
+      favFolderId = row.dataset.fid === '' ? null : +row.dataset.fid;
+      closeFavTree();
+      loadYifyFavs();
+    });
+  });
+  document.addEventListener('keydown', favTreeEsc);
+  document.body.appendChild(overlay);
+  favTreeEl = overlay;
+}
+
+// Hace de `el` un destino donde soltar una peli para moverla a `folderId`
+// (null = raíz). Compartido por los tiles de carpeta y el botón "◀ Todas".
+function wireFavDropTarget(el, folderId) {
+  el.addEventListener('dragover', (e) => {
+    if (favDragId == null) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    el.classList.add('fav-drop-over');
+  });
+  el.addEventListener('dragleave', () => el.classList.remove('fav-drop-over'));
+  el.addEventListener('drop', async (e) => {
+    e.preventDefault();
+    el.classList.remove('fav-drop-over');
+    let id = favDragId;
+    if (id == null) { const d = +e.dataTransfer.getData('text/plain'); id = Number.isNaN(d) ? null : d; }
+    favDragId = null;
+    if (id == null) return;
+    const m = favAll.find((x) => x.id === id);
+    if (m && (m.folderId ?? null) === (folderId ?? null)) return;   // ya está ahí
+    const r = await window.api.favs.move(id, folderId);
+    if (r && r.error) return;
+    loadYifyFavs();
+  });
+}
+
+// Habilita el arrastre de las tarjetas/filas de película en modo Favoritos.
+// Se llama tras cada render (también al cambiar de vista).
+function enableFavDnD(el) {
+  let items;
+  if (yifyView === 'icons') items = el.querySelectorAll('.yify-dash-cell');
+  else if (yifyView === 'list') items = el.querySelectorAll('.yify-tr:not(.yify-tr-head)');
+  else items = el.querySelectorAll('.yify-movie');
+  items.forEach((item) => {
+    const idxEl = item.dataset.i != null ? item : item.querySelector('[data-i]');
+    if (!idxEl) return;
+    const m = yifyShown[+idxEl.dataset.i];
+    if (!m) return;
+    item.setAttribute('draggable', 'true');
+    item.classList.add('fav-draggable');
+    item.querySelectorAll('img').forEach((im) => { im.draggable = false; });
+    item.addEventListener('dragstart', (e) => {
+      favDragId = m.id;
+      try { e.dataTransfer.setData('text/plain', String(m.id)); } catch {}
+      e.dataTransfer.effectAllowed = 'move';
+      item.classList.add('fav-dragging');
+      const bar = $('yify-fav-bar');
+      if (bar) bar.classList.add('fav-dnd-active');
+    });
+    item.addEventListener('dragend', () => {
+      favDragId = null;
+      item.classList.remove('fav-dragging');
+      const bar = $('yify-fav-bar');
+      if (bar) bar.classList.remove('fav-dnd-active');
+      document.querySelectorAll('.fav-drop-over').forEach((n) => n.classList.remove('fav-drop-over'));
+    });
+  });
 }
 
 function setYifyFavsMode(on) {
@@ -1012,9 +1328,15 @@ function setYifyFavsMode(on) {
   });
   const filters = document.querySelector('#tab-torrents .yify-filters');
   if (filters) filters.style.display = yifyFavsMode ? 'none' : '';
-  if (yifyFavsMode) loadYifyFavs();
-  else if (yifyOk) loadYifyList();
-  else initYify();
+  if (yifyFavsMode) {
+    loadYifyFavs();
+  } else {
+    favFolderId = null;
+    favCreating = false;
+    renderFavBar();   // oculta la barra de carpetas
+    if (yifyOk) loadYifyList();
+    else initYify();
+  }
 }
 
 // ── Ficha de película (modal): movie_details + movie_suggestions ──
@@ -1023,7 +1345,8 @@ function closeYifyModal() {
   if (yifyModalEl) { yifyModalEl.remove(); yifyModalEl = null; }
   document.removeEventListener('keydown', yifyModalEsc);
 }
-function yifyModalEsc(e) { if (e.key === 'Escape') closeYifyModal(); }
+// Con el reproductor abierto, Escape cierra el player primero (no la ficha).
+function yifyModalEsc(e) { if (e.key === 'Escape' && !playerState) closeYifyModal(); }
 
 async function openYifyModal(movieId) {
   closeYifyModal();
@@ -1098,6 +1421,7 @@ function fillYifyModal(box, m, sugMovies) {
         <div class="yify-meta">${escapeHtml(yifyMeta(m))}</div>
         ${m.genres && m.genres.length ? `<div class="yify-genres">${escapeHtml(m.genres.join(' · '))}</div>` : ''}
         <div class="yify-modal-actions-row">
+          ${bestStreamTorrent(m) ? `<button class="fin-btn yify-watch-action js-yify-watch">▶ Ver online</button>` : ''}
           <button class="fin-btn yify-fav-action js-yify-modal-fav${favIds.has(m.id) ? ' faved' : ''}">${favIds.has(m.id) ? '♥ En favoritos' : '♡ Guardar en favoritos'}</button>
           ${m.trailer ? `<button class="fin-btn js-yify-link" data-url="${escapeHtml(m.trailer)}">▶ Trailer</button>` : ''}
           ${m.url ? `<button class="fin-btn js-yify-link" data-url="${escapeHtml(m.url)}">Ver en YTS ↗</button>` : ''}
@@ -1145,6 +1469,8 @@ function fillYifyModal(box, m, sugMovies) {
   box.querySelectorAll('.js-yify-link').forEach((b) => {
     b.addEventListener('click', () => { if (b.dataset.url) window.api.openExternal(b.dataset.url); });
   });
+  const watchBtn = box.querySelector('.js-yify-watch');
+  if (watchBtn) watchBtn.addEventListener('click', () => openPlayer(m));
   box.querySelectorAll('.js-yify-modal-magnet').forEach((b) => {
     b.addEventListener('click', () => {
       const t = (m.torrents || [])[+b.dataset.t];
@@ -1155,6 +1481,271 @@ function fillYifyModal(box, m, sugMovies) {
   box.querySelectorAll('.js-yify-sug').forEach((c) => {
     c.addEventListener('click', () => openYifyModal(+c.dataset.id));
   });
+}
+
+// ── Reproductor en directo (WebTorrent + <video>) ─────────────────────────
+// Abre un overlay sobre la ficha, agrega el magnet en el proceso principal y
+// apunta el <video> a la URL local (soporta Range → adelantar/retroceder y
+// volumen nativos). Los subtítulos se bajan de OpenSubtitles y se muestran como
+// <track>. Al cerrar se detiene el torrent y se borran del disco las partes ya
+// descargadas.
+let playerState = null;   // { overlay, infoHash, statsTimer, blobUrls, subs, movie, currentSub }
+
+// Mejor torrent para stream: prioriza contenedores que Chromium reproduce
+// (x264 .mp4 de 1080p/720p) y deja el 2160p x265 último (suele no decodificar).
+function bestStreamTorrent(m) {
+  const ts = (m.torrents || []).filter((t) => t && t.magnet);
+  if (!ts.length) return null;
+  const rank = (t) => {
+    const q = String(t.quality || '');
+    if (q.startsWith('1080')) return 4;
+    if (q.startsWith('720')) return 3;
+    if (q.startsWith('480')) return 2;
+    if (q.startsWith('2160')) return 1;   // HEVC: menos compatible
+    return 0;
+  };
+  return ts.slice().sort((a, b) => rank(b) - rank(a))[0];
+}
+
+function fmtSpeed(bps) {
+  if (!bps || bps < 1024) return `${Math.round(bps || 0)} B/s`;
+  if (bps < 1024 * 1024) return `${(bps / 1024).toFixed(0)} KB/s`;
+  return `${(bps / (1024 * 1024)).toFixed(1)} MB/s`;
+}
+
+function closePlayer() {
+  const st = playerState;
+  if (!st) return;
+  playerState = null;
+  try { clearInterval(st.statsTimer); } catch {}
+  try { if (st.hls) st.hls.destroy(); } catch {}
+  const v = st.overlay && st.overlay.querySelector('video');
+  if (v) { try { v.pause(); v.removeAttribute('src'); v.load(); } catch {} }
+  (st.blobUrls || []).forEach((u) => { try { URL.revokeObjectURL(u); } catch {} });
+  if (st.overlay) st.overlay.remove();
+  document.removeEventListener('keydown', playerEsc);
+  if (st.infoHash) { try { window.api.stream.stop(st.infoHash); } catch {} }   // borra lo bajado
+}
+function playerEsc(e) { if (e.key === 'Escape') closePlayer(); }
+
+function openPlayer(m, torrentIndex) {
+  closePlayer();
+  const torrents = (m.torrents || []).filter((t) => t && t.magnet);
+  const torrent = (torrentIndex != null && torrents[torrentIndex]) ? torrents[torrentIndex] : bestStreamTorrent(m);
+  if (!torrent) return;
+
+  const overlay = document.createElement('div');
+  overlay.className = 'player-overlay';
+  overlay.innerHTML = `
+    <div class="player-box">
+      <div class="player-head">
+        <span class="player-title">${escapeHtml(m.title)}${m.year ? ` (${m.year})` : ''}</span>
+        <span class="player-mode" id="player-mode"></span>
+        <span class="player-status" id="player-status">Conectando…</span>
+        <button class="fin-modal-x js-player-x" title="Cerrar (Esc)">✕</button>
+      </div>
+      <div class="player-stage">
+        <video id="player-video" controls autoplay playsinline></video>
+        <div class="player-stage-msg" id="player-msg">
+          <div class="ai-loading">Buscando seeds y preparando la reproducción…</div>
+        </div>
+      </div>
+      <div class="player-controls">
+        <label class="player-ctl">
+          <span>Calidad</span>
+          <select id="player-quality">
+            ${torrents.map((t, i) => `<option value="${i}">${escapeHtml(t.quality || '?')}${t.type ? ' · ' + escapeHtml(t.type) : ''}${t.size ? ' · ' + escapeHtml(t.size) : ''}</option>`).join('')}
+          </select>
+        </label>
+        <label class="player-ctl">
+          <span>Subtítulos</span>
+          <select id="player-subs"><option value="">Cargando…</option></select>
+        </label>
+        <button class="fin-btn player-sub-dl js-player-subdl" disabled title="Descargar el subtítulo seleccionado (.srt)">⬇ Descargar sub</button>
+        <span class="player-sub-note" id="player-sub-note"></span>
+      </div>
+    </div>`;
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) closePlayer(); });
+  document.addEventListener('keydown', playerEsc);
+  document.body.appendChild(overlay);
+
+  playerState = { overlay, infoHash: null, statsTimer: null, blobUrls: [], subs: [], movie: m, currentSub: null };
+
+  overlay.querySelector('.js-player-x').addEventListener('click', closePlayer);
+  const qSel = overlay.querySelector('#player-quality');
+  qSel.value = String(torrents.indexOf(torrent));
+  qSel.addEventListener('change', () => {
+    const t = torrents[+qSel.value];
+    if (t) startPlayback(t);
+  });
+  overlay.querySelector('.js-player-subdl').addEventListener('click', downloadPlayerSub);
+  overlay.querySelector('#player-subs').addEventListener('change', (e) => {
+    if (e.target.value === '') clearPlayerSub();
+    else applyPlayerSub(+e.target.value);
+  });
+
+  loadPlayerSubs(m);
+  startPlayback(torrent);
+}
+
+async function startPlayback(torrent) {
+  const st = playerState;
+  if (!st) return;
+  const token = (st.playToken = (st.playToken || 0) + 1);   // invalida cargas anteriores
+  const video = st.overlay.querySelector('#player-video');
+  const status = st.overlay.querySelector('#player-status');
+  const msg = st.overlay.querySelector('#player-msg');
+
+  const modeEl = st.overlay.querySelector('#player-mode');
+  if (st.infoHash) { try { window.api.stream.stop(st.infoHash); } catch {} st.infoHash = null; }
+  try { clearInterval(st.statsTimer); } catch {}
+  st.statsTimer = null;
+  try { if (st.hls) { st.hls.destroy(); st.hls = null; } } catch {}
+  try { video.pause(); video.removeAttribute('src'); video.load(); } catch {}
+  msg.style.display = 'flex';
+  msg.innerHTML = `<div class="ai-loading">Buscando seeds y preparando la reproducción…</div>`;
+  status.textContent = 'Conectando…';
+  if (modeEl) { modeEl.textContent = ''; modeEl.title = ''; }
+
+  const r = await window.api.stream.start(torrent.magnet);
+  if (playerState !== st || st.playToken !== token) {   // cerraron o cambiaron de calidad mientras conectaba
+    if (r && r.infoHash) { try { window.api.stream.stop(r.infoHash); } catch {} }
+    return;
+  }
+  if (!r || r.error) {
+    status.textContent = 'Error';
+    msg.innerHTML = `<div class="player-err">No se pudo iniciar la reproducción${r && r.error ? `<br><span class="yify-down-err">${escapeHtml(r.error)}</span>` : ''}<br><br>Probá otra calidad, o abrí el 🧲 magnet en tu cliente de torrents.</div>`;
+    return;
+  }
+  st.infoHash = r.infoHash;
+
+  if (modeEl && r.note) { modeEl.textContent = r.transcoding ? '⚙ Transcodificando' : (r.mode === 'hls' ? '⚙ Remux' : ''); modeEl.title = r.note; }
+
+  if (r.mode === 'hls' && window.Hls && window.Hls.isSupported()) {
+    const hls = new window.Hls({ maxBufferLength: 30 });
+    st.hls = hls;
+    hls.on(window.Hls.Events.ERROR, (_evt, data) => {
+      if (playerState !== st || st.playToken !== token || !data.fatal) return;
+      status.textContent = 'Error de transcodificación';
+      msg.style.display = 'flex';
+      msg.innerHTML = `<div class="player-err">Falló el stream transcodificado.<br>Probá otra calidad.</div>`;
+    });
+    hls.on(window.Hls.Events.MANIFEST_PARSED, () => { video.play().catch(() => {}); });
+    hls.loadSource(r.url);
+    hls.attachMedia(video);
+  } else {
+    video.src = r.url;
+    video.play().catch(() => {});
+    if (!r.playable) {
+      msg.innerHTML = `<div class="player-err">El archivo <b>${escapeHtml(r.name)}</b> puede no reproducirse aquí (contenedor/códec no soportado por Chromium).${r.note ? `<br><span class="yify-down-err">${escapeHtml(r.note)}</span>` : ''}<br>Probá 720p o 1080p (x264 .mp4).</div>`;
+    }
+  }
+
+  video.addEventListener('playing', () => { if (playerState === st && st.playToken === token) msg.style.display = 'none'; }, { once: true });
+  video.addEventListener('error', () => {
+    if (playerState !== st || st.playToken !== token) return;
+    status.textContent = 'Error de reproducción';
+    msg.style.display = 'flex';
+    msg.innerHTML = `<div class="player-err">El navegador no pudo reproducir este archivo (códec/contenedor no soportado).<br>Probá 720p o 1080p (x264 .mp4).</div>`;
+  }, { once: true });
+
+  st.statsTimer = setInterval(async () => {
+    if (playerState !== st || st.playToken !== token || !st.infoHash) return;
+    const s = await window.api.stream.stats(st.infoHash);
+    if (playerState !== st || st.playToken !== token || !s || !s.active) return;
+    const pct = Math.round((s.progress || 0) * 100);
+    status.textContent = `${s.numPeers || 0} peers · ${fmtSpeed(s.downloadSpeed)} · ${pct}% buffer`;
+  }, 1500);
+}
+
+// Baja la lista de subtítulos (ES/EN) y llena el dropdown; auto-selecciona el
+// primer español si lo hay.
+async function loadPlayerSubs(m) {
+  const st = playerState;
+  if (!st) return;
+  const sel = st.overlay.querySelector('#player-subs');
+  const note = st.overlay.querySelector('#player-sub-note');
+  const r = await window.api.subs.search({ imdbId: m.imdb, query: m.title, langs: ['spa', 'eng'] });
+  if (playerState !== st || !sel) return;
+  const subs = (r && !r.error && Array.isArray(r.subs)) ? r.subs : [];
+  st.subs = subs;
+  if (!subs.length) {
+    sel.innerHTML = `<option value="">Sin subtítulos</option>`;
+    sel.disabled = true;
+    if (note) note.textContent = (r && r.error) ? 'No se pudieron buscar subtítulos' : 'Sin subtítulos disponibles';
+    return;
+  }
+  sel.innerHTML = `<option value="">Sin subtítulos</option>` + subs.map((s, i) =>
+    `<option value="${i}">${escapeHtml(s.langName)} · ${escapeHtml(s.name)}${s.downloads ? ` (${s.downloads})` : ''}</option>`
+  ).join('');
+  sel.disabled = false;
+  const firstEs = subs.findIndex((s) => s.lang === 'spa');
+  if (firstEs >= 0) { sel.value = String(firstEs); applyPlayerSub(firstEs); }
+}
+
+function clearPlayerSub() {
+  const st = playerState;
+  if (!st) return;
+  const video = st.overlay.querySelector('#player-video');
+  video.querySelectorAll('track').forEach((t) => t.remove());
+  try { for (const tt of video.textTracks) tt.mode = 'disabled'; } catch {}
+  (st.blobUrls || []).forEach((u) => { try { URL.revokeObjectURL(u); } catch {} });
+  st.blobUrls = [];
+  st.currentSub = null;
+  const dlBtn = st.overlay.querySelector('.js-player-subdl');
+  const note = st.overlay.querySelector('#player-sub-note');
+  if (dlBtn) dlBtn.disabled = true;
+  if (note) note.textContent = '';
+}
+
+// Baja el sub elegido, lo convierte a track VTT y lo muestra en vivo.
+async function applyPlayerSub(index) {
+  const st = playerState;
+  if (!st) return;
+  clearPlayerSub();
+  const sub = st.subs[index];
+  if (!sub) return;
+  const video = st.overlay.querySelector('#player-video');
+  const note = st.overlay.querySelector('#player-sub-note');
+  if (note) note.textContent = 'Bajando subtítulo…';
+  const r = await window.api.subs.fetch({ link: sub.link, encoding: sub.encoding });
+  if (playerState !== st) return;
+  if (!r || r.error || !r.vtt) { if (note) note.textContent = 'No se pudo bajar el subtítulo'; return; }
+  const url = URL.createObjectURL(new Blob([r.vtt], { type: 'text/vtt' }));
+  st.blobUrls.push(url);
+  const track = document.createElement('track');
+  track.kind = 'subtitles';
+  track.label = sub.langName;
+  track.srclang = sub.lang === 'spa' ? 'es' : (sub.lang === 'eng' ? 'en' : sub.lang);
+  track.src = url;
+  track.default = true;
+  video.appendChild(track);
+  const enable = () => { try { const tt = video.textTracks[video.textTracks.length - 1]; if (tt) tt.mode = 'showing'; } catch {} };
+  track.addEventListener('load', enable, { once: true });
+  setTimeout(enable, 250);
+  st.currentSub = sub;
+  const dlBtn = st.overlay.querySelector('.js-player-subdl');
+  if (dlBtn) dlBtn.disabled = false;
+  if (note) note.textContent = '';
+}
+
+// Guarda a disco el .srt del subtítulo seleccionado (diálogo de guardado).
+async function downloadPlayerSub() {
+  const st = playerState;
+  if (!st || !st.currentSub) return;
+  const sub = st.currentSub;
+  const dlBtn = st.overlay.querySelector('.js-player-subdl');
+  const note = st.overlay.querySelector('#player-sub-note');
+  if (dlBtn) dlBtn.disabled = true;
+  if (note) note.textContent = 'Guardando…';
+  const base = `${st.movie.title}${st.movie.year ? ` (${st.movie.year})` : ''}.${sub.lang}.srt`;
+  const r = await window.api.subs.download({ link: sub.link, encoding: sub.encoding, filename: base });
+  if (playerState !== st) return;
+  if (dlBtn) dlBtn.disabled = false;
+  if (!note) return;
+  if (r && r.ok) note.textContent = '✓ Guardado en disco';
+  else if (r && r.canceled) note.textContent = '';
+  else note.textContent = 'No se pudo guardar';
 }
 
 // Health check de arranque. También lo reusa el botón "Reintentar".
@@ -1353,20 +1944,52 @@ function wireEzRows(container, torrents, showCtx) {
   });
 }
 
-// Tabla de la sección Favoritos (datos de la base).
+// Cards con miniatura para la sección Favoritos de series (como las películas).
+// La imagen es el screenshot de EZTV (apaisado) o el poster de la serie.
+function ezFavCardsHtml(favs) {
+  return favs.map((t, i) => {
+    const img = t.screenshot;
+    const epTag = ezEpTag(t);
+    const meta = [epTag !== '—' ? epTag : '', t.quality, t.size].filter(Boolean).join(' · ');
+    const seeds = t.seeds != null ? `▲ ${t.seeds}` : '';
+    const title = t.showTitle || t.title;
+    return `
+    <div class="yify-movie ez-fav-card">
+      <div class="yify-poster-wrap">
+        ${img
+          ? `<img class="yify-poster" src="${escapeHtml(img)}" loading="lazy" alt="">`
+          : `<div class="yify-poster yify-noposter">📺</div>`}
+        <button class="yify-fav-btn faved js-ez-fav" data-i="${i}" title="Quitar de favoritos">♥</button>
+        ${epTag !== '—' ? `<span class="ez-fav-setag">${escapeHtml(epTag)}</span>` : ''}
+      </div>
+      <div class="yify-info">
+        <div class="yify-title" title="${escapeHtml(t.filename || t.title)}">${escapeHtml(title)}</div>
+        <div class="yify-meta">${escapeHtml(meta || '—')}${seeds ? ` · <span class="yify-td-seeds">${seeds}</span>` : ''}</div>
+        <div class="yify-quals">
+          ${t.magnet ? `<button class="yify-q js-ez-magnet" data-i="${i}"
+            title="Abrir magnet${t.quality ? ` ${escapeHtml(t.quality)}` : ''}${t.size ? ` · ${escapeHtml(t.size)}` : ''}">🧲 Magnet</button>` : ''}
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+// Sección Favoritos de series: cards con miniatura (datos de la base). El modal
+// de serie sigue usando la tabla (ezEpRowsHtml); esta función es solo Favoritos.
 function renderEzRows(torrents) {
   const el = $('ez-list');
   if (!el) return;
-  el.className = 'yify-table';
   ezShown = Array.isArray(torrents) ? torrents : [];
   if (!ezShown.length) {
+    el.className = 'yify-grid';
     el.innerHTML = `<div class="ai-loading">${ezFavsMode
       ? 'Sin favoritos todavía — tocá ♡ en un episodio para guardarlo acá.'
       : 'Sin resultados'}</div>`;
     adjustWindowSize();
     return;
   }
-  el.innerHTML = ezEpRowsHtml(ezShown);
+  el.className = 'yify-grid';
+  el.innerHTML = ezFavCardsHtml(ezShown);
   wireEzRows(el, ezShown, null);
   adjustWindowSize();
 }
@@ -2674,6 +3297,7 @@ function renderAI() {
     if (c.session)    parts.push(aiRow('Sesión',         c.session.pct, '',                                                        'cd-session'));
     if (c.weekAll)    parts.push(aiRow('Semana (todos)', c.weekAll.pct, '',                                                        'cd-week'));
     if (c.weekSonnet) parts.push(aiRow('Semana (Sonnet)', c.weekSonnet.pct, ''));
+    if (c.weekFable)  parts.push(aiRow('Semana (Fable)',  c.weekFable.pct,  ''));
     if (c.extra)      parts.push(aiRow('Extra',          c.extra.pct,   `<span style="color:#d4d4d8;font-weight:600;">$${c.extra.spent}</span> / $${c.extra.total} gastado`, 'cd-extra'));
 
     if (c.insight) {

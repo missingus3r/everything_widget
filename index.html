@@ -72,6 +72,13 @@
           <div class="gauge">
             <div class="gauge-ring">
               <svg viewBox="0 0 100 100" class="gauge-svg">
+                <defs>
+                  <linearGradient id="cpuGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+                    <stop offset="0%" stop-color="#7c3aed"></stop>
+                    <stop offset="60%" stop-color="#a855f7"></stop>
+                    <stop offset="100%" stop-color="#c084fc"></stop>
+                  </linearGradient>
+                </defs>
                 <circle class="gauge-track" cx="50" cy="50" r="42"></circle>
                 <circle class="gauge-arc" id="cpu-arc" cx="50" cy="50" r="42"></circle>
               </svg>
@@ -85,6 +92,13 @@
           <div class="gauge">
             <div class="gauge-ring">
               <svg viewBox="0 0 100 100" class="gauge-svg">
+                <defs>
+                  <linearGradient id="ramGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+                    <stop offset="0%" stop-color="#0ea5e9"></stop>
+                    <stop offset="60%" stop-color="#22d3ee"></stop>
+                    <stop offset="100%" stop-color="#67e8f9"></stop>
+                  </linearGradient>
+                </defs>
                 <circle class="gauge-track" cx="50" cy="50" r="42"></circle>
                 <circle class="gauge-arc" id="ram-arc" cx="50" cy="50" r="42"></circle>
               </svg>
@@ -462,6 +476,7 @@
             <option value="year">Año</option>
           </select>
         </div>
+        <div id="yify-fav-bar" class="yify-fav-bar" hidden></div>
         <div id="yify-list" class="yify-grid">
           <div class="ai-loading">Verificando API…</div>
         </div>
@@ -682,6 +697,7 @@
 
   </div>
 
+  <script src="vendor/hls.min.js"></script>
   <script src="renderer.js"></script>
 </body>
 </html>

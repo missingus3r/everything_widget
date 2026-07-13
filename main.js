@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Tray, Menu, ipcMain, nativeImage, screen, shell } = require('electron');
+const { app, BrowserWindow, Tray, Menu, ipcMain, nativeImage, screen, shell, dialog } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const zlib = require('zlib');
@@ -13,6 +13,9 @@ const speedtestHistory = require('./speedtestHistory');
 const { readLocalUsage } = require('./localUsage');
 const finances = require('./finances');
 const { checkYify, fetchYifyMovies, fetchYifyDetails, fetchYifySuggestions } = require('./yify');
+const streaming = require('./streaming');
+const transcode = require('./transcode');
+const subtitles = require('./subtitles');
 const { checkEztv, fetchEztvTorrents, fetchEztvShows, searchShows } = require('./eztv');
 const favorites = require('./favorites');
 const { listApiDefs, checkApis } = require('./apiStatus');
@@ -252,6 +255,7 @@ function updateTray() {
   const s   = latestUsage?.session?.pct;
   const w   = latestUsage?.weekAll?.pct;
   const ws  = latestUsage?.weekSonnet?.pct;
+  const wf  = latestUsage?.weekFable?.pct;
   const e   = latestUsage?.extra;
   const cx5 = latestCodex?.session5h?.pct;
   const cxw = latestCodex?.weekly?.pct;
@@ -265,6 +269,7 @@ function updateTray() {
   tipLines.push(s != null ? `Session: ${s}%` : 'Session: —');
   tipLines.push(w != null ? `Week (all): ${w}%` : 'Week (all): —');
   if (ws != null) tipLines.push(`Week (Sonnet): ${ws}%`);
+  if (wf != null) tipLines.push(`Week (Fable): ${wf}%`);
   if (e) tipLines.push(`Extra: ${e.pct}% ($${e.spent} / $${e.total})`);
   if (cx5 != null || cxw != null) {
     tipLines.push('— Codex —');
@@ -282,6 +287,7 @@ function updateTray() {
     { label: s != null ? `  Session  ${s}%` : '  Session  —', enabled: false },
     { label: w != null ? `  Week (all)  ${w}%` : '  Week (all)  —', enabled: false },
     ...(ws != null ? [{ label: `  Week (Sonnet)  ${ws}%`, enabled: false }] : []),
+    ...(wf != null ? [{ label: `  Week (Fable)  ${wf}%`, enabled: false }] : []),
     ...(e ? [{ label: `  Extra  ${e.pct}%  ($${e.spent}/$${e.total})`, enabled: false }] : []),
     ...(cx5 != null || cxw != null ? [
       { type: 'separator' },
@@ -414,6 +420,63 @@ ipcMain.handle('yify:details', async (_e, movieId) => {
 ipcMain.handle('yify:suggestions', async (_e, movieId) => {
   try {
     return await fetchYifySuggestions(movieId);
+  } catch (e) {
+    return { error: String(e && e.message || e) };
+  }
+});
+
+// ── Reproducción en directo (WebTorrent) ───────────────────────
+// stream:start agrega el magnet y devuelve una URL local que el <video> lee con
+// Range (adelantar/buscar). stream:stop borra del disco lo descargado. Todo
+// degrada a { error }; nunca tira.
+ipcMain.handle('stream:start', async (_e, magnet) => {
+  try {
+    const s = await streaming.start(magnet);
+    if (s && s.error) return s;
+    // ffmpeg decide: servir directo (mp4/x264) o transcodificar/remuxear a HLS
+    // (HEVC/MKV/AC3…) para que reproduzca cualquier formato.
+    const pb = await transcode.prepare({ srcUrl: s.url, name: s.name, infoHash: s.infoHash });
+    return { infoHash: s.infoHash, name: s.name, length: s.length, ...pb };
+  } catch (e) {
+    return { error: String(e && e.message || e) };
+  }
+});
+ipcMain.handle('stream:stop', async (_e, hash) => {
+  try {
+    await transcode.stopJob(hash);   // mata ffmpeg + borra segmentos HLS
+    return await streaming.stop(hash);
+  } catch (e) { return { error: String(e && e.message || e) }; }
+});
+ipcMain.handle('stream:stats', (_e, hash) => {
+  try { return streaming.stats(hash); }
+  catch { return { active: false }; }
+});
+
+// ── Subtítulos (OpenSubtitles, sin key) ────────────────────────
+// subs:search lista opciones; subs:fetch trae el VTT para el <track>; y
+// subs:download baja el .srt a disco (con diálogo de guardado).
+ipcMain.handle('subs:search', async (_e, params) => {
+  try { return await subtitles.search(params || {}); }
+  catch (e) { return { error: String(e && e.message || e) }; }
+});
+ipcMain.handle('subs:fetch', async (_e, params) => {
+  try { return await subtitles.fetchSub(params || {}); }
+  catch (e) { return { error: String(e && e.message || e) }; }
+});
+ipcMain.handle('subs:download', async (_e, params) => {
+  try {
+    const { link, encoding, filename } = params || {};
+    const { srt } = await subtitles.fetchSub({ link, encoding });
+    let safe = String(filename || 'subtitulo').replace(/[\\/:*?"<>|]+/g, '_').trim() || 'subtitulo';
+    if (!/\.srt$/i.test(safe)) safe += '.srt';
+    const def = path.join(app.getPath('downloads'), safe);
+    const res = await dialog.showSaveDialog(win || undefined, {
+      defaultPath: def,
+      filters: [{ name: 'Subtítulo', extensions: ['srt'] }],
+    });
+    if (res.canceled || !res.filePath) return { canceled: true };
+    await fs.promises.writeFile(res.filePath, '﻿' + srt, 'utf8');   // BOM → tildes OK en cualquier player
+    return { ok: true, path: res.filePath };
   } catch (e) {
     return { error: String(e && e.message || e) };
   }
@@ -572,6 +635,28 @@ ipcMain.handle('favs:remove', async (_e, movieId) => {
   }
 });
 
+// ── Carpetas de favoritos (YIFY) ───────────────────────────────
+ipcMain.handle('favs:folders', async () => {
+  try { return await favorites.listFolders(); }
+  catch { return []; }
+});
+ipcMain.handle('favs:folder-create', async (_e, { name, parentId } = {}) => {
+  try { return { ok: true, folder: await favorites.createFolder(name, parentId ?? null) }; }
+  catch (e) { return { error: String(e && e.message || e) }; }
+});
+ipcMain.handle('favs:folder-rename', async (_e, { id, name }) => {
+  try { await favorites.renameFolder(id, name); return { ok: true }; }
+  catch (e) { return { error: String(e && e.message || e) }; }
+});
+ipcMain.handle('favs:folder-delete', async (_e, id) => {
+  try { await favorites.deleteFolder(id); return { ok: true }; }
+  catch (e) { return { error: String(e && e.message || e) }; }
+});
+ipcMain.handle('favs:move', async (_e, { movieId, folderId }) => {
+  try { await favorites.moveToFolder(movieId, folderId); return { ok: true }; }
+  catch (e) { return { error: String(e && e.message || e) }; }
+});
+
 // ── Favoritos de series (EZTV) ─────────────────────────────────
 // El renderer pasa el torrent normalizado + contexto de la serie (showTitle /
 // showImage de IMDb); no hay endpoint de detalles que enriquecer.
@@ -707,9 +792,11 @@ ipcMain.on('resize-content', (_e, height) => {
 app.whenReady().then(() => {
   createWindow();
   createTray();
+  streaming.sweep();   // limpia restos de streams de una sesión anterior
+  transcode.sweep();   // ídem para segmentos HLS huérfanos
   app.on('activate', () => { if (!win) createWindow(); });
 });
 
 // Tray keeps the app alive after window-all-closed.
 app.on('window-all-closed', (e) => { e.preventDefault(); });
-app.on('before-quit', () => { isQuitting = true; });
+app.on('before-quit', () => { isQuitting = true; transcode.stopAll(); streaming.stopAll(); });

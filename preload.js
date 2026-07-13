@@ -49,11 +49,28 @@ contextBridge.exposeInMainWorld('api', {
     suggestions: (id)     => ipcRenderer.invoke('yify:suggestions', id),
   },
 
+  stream: {
+    start: (magnet) => ipcRenderer.invoke('stream:start', magnet),
+    stop:  (hash)   => ipcRenderer.invoke('stream:stop', hash),
+    stats: (hash)   => ipcRenderer.invoke('stream:stats', hash),
+  },
+
+  subs: {
+    search:   (params) => ipcRenderer.invoke('subs:search', params),
+    fetch:    (params) => ipcRenderer.invoke('subs:fetch', params),
+    download: (params) => ipcRenderer.invoke('subs:download', params),
+  },
+
   favs: {
     ids:    ()      => ipcRenderer.invoke('favs:ids'),
     list:   ()      => ipcRenderer.invoke('favs:list'),
     add:    (movie) => ipcRenderer.invoke('favs:add', movie),
     remove: (id)    => ipcRenderer.invoke('favs:remove', id),
+    folders:      ()                => ipcRenderer.invoke('favs:folders'),
+    createFolder: (name, parentId)  => ipcRenderer.invoke('favs:folder-create', { name, parentId }),
+    renameFolder: (id, name)        => ipcRenderer.invoke('favs:folder-rename', { id, name }),
+    deleteFolder: (id)           => ipcRenderer.invoke('favs:folder-delete', id),
+    move:         (movieId, folderId) => ipcRenderer.invoke('favs:move', { movieId, folderId }),
   },
 
   eztv: {

@@ -12,9 +12,11 @@
     "node": ">=18"
   },
   "dependencies": {
+    "hls.js": "^1.6.16",
     "mongodb": "^7.2.0",
     "node-pty": "^1.0.0",
-    "sql.js": "^1.14.1"
+    "sql.js": "^1.14.1",
+    "webtorrent": "^3.0.16"
   },
   "devDependencies": {
     "electron": "^33.4.11"

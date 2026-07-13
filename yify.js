@@ -52,6 +52,7 @@ function normalizeMovie(m) {
   return {
     id: m.id,
     url: m.url || null,                       // yts page
+    imdb: m.imdb_code || null,                // ttXXXXXXX — para buscar subtítulos
     title: m.title_english || m.title || '—',
     year: m.year || null,
     rating: typeof m.rating === 'number' ? m.rating : null,
