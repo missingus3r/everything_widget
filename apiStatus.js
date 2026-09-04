@@ -7,6 +7,7 @@
 
 const https = require('https');
 const { checkYify } = require('./yify');
+const { checkLime } = require('./limetorrents');
 const { checkEztv } = require('./eztv');
 const { checkReddit } = require('./reddit');
 const { checkNews } = require('./news');
@@ -88,6 +89,10 @@ const CHECKS = [
     url: 'https://movies-api.accel.li/api/v2',
     endpoints: ['/list_movies.json', '/movie_details.json', '/movie_suggestions.json'],
     run: timed(checkYify) },
+  { id: 'movies_lime', name: 'Torrents (RSS)', provider: 'LimeTorrents', host: 'www.limetorrents.fun',
+    url: 'https://www.limetorrents.fun/rss/',
+    endpoints: ['/rss/16/ (Movies) · /rss/20/ (TV) · /rss/8/ (Games)'],
+    run: timed(checkLime) },
   { id: 'series', name: 'Series', provider: 'EZTV', host: 'eztvx.to + mirrors',
     url: 'https://eztvx.to/api/get-torrents',
     endpoints: ['/api/get-torrents (eztvx.to · eztv.wf · eztv1.xyz)'],

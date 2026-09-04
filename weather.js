@@ -85,9 +85,19 @@ async function fetchWeather({ latitude, longitude, label }) {
   const cur = data.current || {};
   const d = data.daily || {};
   const [curEmoji, curLabel] = describe(cur.weather_code);
+  // sunrise/sunset vienen en hora local del lugar sin offset ("2026-09-03T06:52");
+  // se pasan a epoch ms con el utc_offset_seconds del API para que el renderer
+  // decida día/noche con el reloj, sin depender de la zona horaria de la PC.
+  const offMs = (data.utc_offset_seconds || 0) * 1000;
+  const toMs = (s) => {
+    if (!s) return null;
+    const t = Date.parse(s + 'Z');
+    return Number.isFinite(t) ? t - offMs : null;
+  };
   const day = (i) => {
     const [emoji, lbl] = describe(d.weather_code?.[i]);
     return {
+      code: d.weather_code?.[i],
       emoji,
       label: lbl,
       max: d.temperature_2m_max?.[i],
@@ -95,6 +105,8 @@ async function fetchWeather({ latitude, longitude, label }) {
       rainPct: d.precipitation_probability_max?.[i],
       sunrise: d.sunrise?.[i],
       sunset: d.sunset?.[i],
+      sunriseMs: toMs(d.sunrise?.[i]),
+      sunsetMs: toMs(d.sunset?.[i]),
     };
   };
 
@@ -106,6 +118,7 @@ async function fetchWeather({ latitude, longitude, label }) {
       humidity: cur.relative_humidity_2m,
       wind: cur.wind_speed_10m,
       isDay: cur.is_day === 1,
+      code: cur.weather_code,
       emoji: curEmoji,
       label: curLabel,
     },

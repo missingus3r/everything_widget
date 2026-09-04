@@ -5,7 +5,7 @@
 // El link de compra es el redirect oficial: cheapshark.com/redirect?dealID=…
 // Precios siempre en USD. Tira en error — el handler IPC degrada a { error }.
 
-const { getJson } = require('./netJson');
+const { getJson, getJsonRes } = require('./netJson');
 
 const BASE = 'https://www.cheapshark.com/api/1.0';
 let storesCache = null;    // [{ id, name }] solo tiendas activas
@@ -23,8 +23,12 @@ function normalizeDeal(d) {
   const sale = parseFloat(d.salePrice), normal = parseFloat(d.normalPrice);
   return {
     dealId: d.dealID,
+    gameId: d.gameID ? String(d.gameID) : null,
     title: d.title || '—',
     storeId: String(d.storeID || ''),
+    steamAppId: d.steamAppID ? String(d.steamAppID) : null,
+    onSale: d.isOnSale === '1' || d.isOnSale === 1,
+    lastChange: d.lastChange ? d.lastChange * 1000 : null,
     salePrice: isFinite(sale) ? sale : null,
     normalPrice: isFinite(normal) ? normal : null,
     savings: d.savings != null ? Math.round(parseFloat(d.savings)) : null,
@@ -61,4 +65,21 @@ async function fetchDeals({ page = 0, storeId = '', sortBy = 'Deal Rating', titl
   };
 }
 
-module.exports = { fetchDeals, fetchStores };
+// Una página cruda de ofertas para el crawler del archivo. CheapShark corta
+// en 50 páginas por consulta (X-Total-Page-Count), así que el backfill del
+// catálogo se hace tienda por tienda: cada storeID tiene su propio tope.
+async function fetchDealsPage({ page = 0, storeId = '', sortBy = 'Recent', pageSize = 60 } = {}) {
+  const params = new URLSearchParams({
+    pageSize: String(Math.max(1, Math.min(60, pageSize))),
+    pageNumber: String(Math.max(0, page)),
+    sortBy,
+  });
+  if (storeId) params.set('storeID', String(storeId));
+  const { data, headers } = await getJsonRes(`${BASE}/deals?${params}`);
+  return {
+    deals: (Array.isArray(data) ? data : []).map(normalizeDeal),
+    totalPages: parseInt(headers['x-total-page-count'], 10) || 0,
+  };
+}
+
+module.exports = { fetchDeals, fetchStores, fetchDealsPage };

@@ -21,10 +21,12 @@ function ensureDb() {
   return readyPromise;
 }
 
-// Core reconciliation between SQLite and Mongo: push local-only rows up
-// ($setOnInsert keeps Mongo authoritative while preserving the initial seed and
-// anything created offline), then pull the authoritative copy down and overwrite
-// SQLite. Returns a status object; never throws on a Mongo problem.
+// Core reconciliation between SQLite and Mongo, SIEMPRE aditiva: push de las
+// filas solo-locales ($setOnInsert preserva lo creado offline sin pisar lo
+// remoto) y pull con merge (mergeAll nunca borra filas locales — una base
+// recién instalada baja todo lo de Mongo, y una Mongo vacía recibe todo lo
+// local; ninguna pisa a la otra). Returns a status object; never throws on a
+// Mongo problem.
 async function reconcile() {
   if (!mongo.isEnabled()) return { ok: false, enabled: false, connected: false, error: 'MongoDB no configurado' };
   const seeded = await mongo.seedUpIfMissing({
@@ -37,7 +39,7 @@ async function reconcile() {
   const remote = await mongo.fetchAll();
   if (!remote) return { ok: false, enabled: true, connected: false, error: 'No se pudieron leer los datos de MongoDB' };
 
-  db.replaceAll({
+  db.mergeAll({
     snapshots: remote.snapshots.map((s) => ({ account: s.account, ts: s.ts, uyu: s.uyu, usd: s.usd })),
     settings: remote.settings.map((s) => ({ key: s._id, value: s.value })),
     expenses: remote.expenses.map((e) => ({
@@ -79,7 +81,15 @@ async function syncNow() {
 
 // Connectivity probe for the Settings indicator.
 async function getMongoStatus() {
-  return { enabled: mongo.isEnabled(), connected: await mongo.isConnected() };
+  const connected = await mongo.isConnected();
+  return {
+    enabled: mongo.isEnabled(),
+    connected,
+    // Espacio del cluster: `quota.blocked` es un rechazo real de Atlas por
+    // falta de lugar; `usage` sirve para verlo venir antes de que pase.
+    quota: mongo.getQuotaState(),
+    usage: connected ? await mongo.usage() : null,
+  };
 }
 
 // App-assigned expense ids, shared verbatim by SQLite and Mongo. Millisecond

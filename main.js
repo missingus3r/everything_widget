@@ -13,10 +13,19 @@ const speedtestHistory = require('./speedtestHistory');
 const { readLocalUsage } = require('./localUsage');
 const finances = require('./finances');
 const { checkYify, fetchYifyMovies, fetchYifyDetails, fetchYifySuggestions } = require('./yify');
+const { checkLime, fetchLimeMovies, fetchLimeTvShows, fetchLimeGameGroups, searchLime } = require('./limetorrents');
+const limeArchive = require('./limeArchive');
 const streaming = require('./streaming');
 const transcode = require('./transcode');
 const subtitles = require('./subtitles');
 const { checkEztv, fetchEztvTorrents, fetchEztvShows, searchShows } = require('./eztv');
+// Archivos históricos de las otras tres fuentes (mismo patrón que limeArchive:
+// SQLite local + Mongo, aditivo). Los tabs listan desde acá y el crawler los
+// llena en segundo plano.
+const yifyArchive = require('./yifyArchive');
+const eztvArchive = require('./eztvArchive');
+const gamesArchive = require('./gamesArchive');
+const archiveCrawl = require('./archiveCrawl');
 const favorites = require('./favorites');
 const { listApiDefs, checkApis } = require('./apiStatus');
 const { fetchUpcoming } = require('./tvmaze');
@@ -400,26 +409,95 @@ ipcMain.handle('run-speedtest', async (event) => {
 ipcMain.handle('get-speedtest-history', () => speedtestHistory.read());
 
 // ── YIFY torrents ──────────────────────────────────────────────
-// The mirror API can die at any moment: yify:check is the startup health probe
-// (never throws), and yify:list degrades to { error } instead of rejecting.
+// El mirror puede morir en cualquier momento: yify:check sigue siendo el probe
+// de arranque (nunca tira) y el listado ya no depende de él — sale del archivo
+// histórico (yifyArchive), que el crawler mantiene al día. De la API viva solo
+// se traen las novedades para archivarlas.
 ipcMain.handle('yify:check', () => checkYify());
 ipcMain.handle('yify:list', async (_e, params) => {
+  const p = params || {};
+  const q = String(p.query || '').trim();
+  let live = null;
+  let liveErr = null;
   try {
-    return await fetchYifyMovies(params || {});
+    // Sin búsqueda: se refresca la primera página de recientes para que lo que
+    // se acaba de subir esté en la base antes de listar. Con búsqueda: la API
+    // busca además por actor y director, cosa que el LIKE local no puede, así
+    // que si está viva manda ella y lo que devuelve queda archivado.
+    if (q) {
+      live = await fetchYifyMovies(p);
+      await yifyArchive.ingest(live.movies);
+    } else if ((p.page || 1) === 1) {
+      const fresh = await fetchYifyMovies({ limit: 50, page: 1, sort: 'date_added' });
+      await yifyArchive.ingest(fresh.movies);
+    }
+  } catch (e) {
+    liveErr = String(e && e.message || e);
+  }
+  if (live) return live;
+  try {
+    // API caída: el listado sale igual del archivo, marcado como `stale`. El
+    // cartel de "API caída" del tab queda solo para cuando tampoco hay nada
+    // archivado todavía.
+    const local = await yifyArchive.list(p);
+    if (liveErr && !local.movies.length) return { error: liveErr };
+    return liveErr ? { ...local, stale: true } : local;
   } catch (e) {
     return { error: String(e && e.message || e) };
   }
 });
+// Ficha: si el mirror responde, la versión completa — que además se archiva
+// (sinopsis larga, download_count) para la próxima vez. Si no, la del archivo.
 ipcMain.handle('yify:details', async (_e, movieId) => {
   try {
-    return await fetchYifyDetails(movieId);
+    const full = await fetchYifyDetails(movieId);
+    await yifyArchive.ingest([full]);
+    return full;
   } catch (e) {
+    try {
+      const archived = await yifyArchive.byId(movieId);
+      if (archived) return archived;
+    } catch {}
     return { error: String(e && e.message || e) };
   }
 });
 ipcMain.handle('yify:suggestions', async (_e, movieId) => {
   try {
     return await fetchYifySuggestions(movieId);
+  } catch (e) {
+    return { error: String(e && e.message || e) };
+  }
+});
+
+// ── LimeTorrents RSS (tab Films) ───────────────────────────────
+// Misma defensa que YIFY: lime:check nunca tira, lime:list degrada a { error }.
+ipcMain.handle('lime:check', () => checkLime());
+ipcMain.handle('lime:list', async (_e, params) => {
+  try {
+    return await fetchLimeMovies(params || {});
+  } catch (e) {
+    return { error: String(e && e.message || e) };
+  }
+});
+// Series agrupadas por show (tab Series) y juegos agrupados (tab Juegos).
+ipcMain.handle('lime:tv-shows', async () => {
+  try {
+    return await fetchLimeTvShows();
+  } catch (e) {
+    return { error: String(e && e.message || e) };
+  }
+});
+ipcMain.handle('lime:games', async () => {
+  try {
+    return await fetchLimeGameGroups();
+  } catch (e) {
+    return { error: String(e && e.message || e) };
+  }
+});
+// Búsqueda del sitio (searchrss) filtrada por categoría (movies / tv / games).
+ipcMain.handle('lime:search', async (_e, params) => {
+  try {
+    return await searchLime(params || {});
   } catch (e) {
     return { error: String(e && e.message || e) };
   }
@@ -493,16 +571,41 @@ ipcMain.handle('api-status:check', async (_e, ids) => {
 // Mismo contrato defensivo que YIFY: eztv:check nunca tira, el resto degrada
 // a { error }. La búsqueda por nombre va contra la suggestion API de IMDb.
 ipcMain.handle('eztv:check', () => checkEztv());
+// Episodios de una serie (modal) o recientes: salen del archivo. Si de esa
+// serie todavía no se bajó el histórico completo, se le pide a la API y se
+// archiva antes de responder — así el modal nunca muestra menos de lo que EZTV
+// tiene, aunque el crawler no haya llegado a esa serie.
 ipcMain.handle('eztv:list', async (_e, params) => {
+  const p = params || {};
   try {
-    return await fetchEztvTorrents(params || {});
+    if (p.imdbId) {
+      const known = await eztvArchive.showFor(p.imdbId);
+      if (!known || !known.fullAt) {
+        const live = await fetchEztvTorrents({ ...p, limit: 100 });
+        await eztvArchive.ingest(live.torrents);
+      }
+    }
+  } catch {}
+  try {
+    return await eztvArchive.listTorrents(p);
   } catch (e) {
-    return { error: String(e && e.message || e) };
+    try { return await fetchEztvTorrents(p); }
+    catch (err) { return { error: String(err && err.message || err) }; }
   }
 });
+// Listado del tab: una card por serie, paginado sobre el archivo. Antes de
+// listar se archiva la página viva de recientes (las novedades).
 ipcMain.handle('eztv:shows', async (_e, params) => {
+  const p = params || {};
+  let stale = false;
   try {
-    return await fetchEztvShows(params || {});
+    const live = await fetchEztvTorrents({ limit: 100, page: 1 });
+    await eztvArchive.ingest(live.torrents);
+  } catch { stale = true; }
+  try {
+    const r = await eztvArchive.listShows(p);
+    if (stale && !r.shows.length) return { error: 'EZTV no responde' };
+    return stale ? { ...r, stale: true } : r;
   } catch (e) {
     return { error: String(e && e.message || e) };
   }
@@ -565,12 +668,31 @@ ipcMain.handle('holidays:next', async () => {
 });
 
 // ── Juegos (CheapShark) ────────────────────────────────────────
+// Igual que Films y Series: la página viva se archiva y el listado (con su
+// orden, filtros y pager) sale de games.sqlite, que guarda todas las ofertas
+// vistas — incluido el precio mínimo histórico de cada una.
 ipcMain.handle('games:deals', async (_e, params) => {
+  const p = params || {};
+  let stale = false;
   try {
-    return await fetchDeals(params || {});
+    const live = await fetchDeals(p);
+    await gamesArchive.ingestStores(live.stores || []);
+    await gamesArchive.ingest(live.deals || []);
+  } catch { stale = true; }
+  try {
+    const r = await gamesArchive.list(p);
+    if (stale && !r.deals.length) return { error: 'CheapShark no responde' };
+    return { ...r, stores: await gamesArchive.listStores(), ...(stale ? { stale: true } : {}) };
   } catch (e) {
     return { error: String(e && e.message || e) };
   }
+});
+
+// Progreso de los archivos históricos (Settings): cuánto hay guardado de cada
+// fuente y en qué anda el crawler.
+ipcMain.handle('archive:status', async () => {
+  try { return await archiveCrawl.status(); }
+  catch (e) { return { error: String(e && e.message || e) }; }
 });
 
 // ── GitHub (token en API Keys con nombre "GitHub") ─────────────
@@ -619,7 +741,11 @@ ipcMain.handle('favs:add', async (_e, movie) => {
   try {
     if (!movie || !movie.id) return { error: 'película inválida' };
     let full = movie;
-    try { full = { ...movie, ...(await fetchYifyDetails(movie.id)) }; } catch {}
+    // Los de LimeTorrents tienen id sintético (negativo) sin ficha en YIFY:
+    // se guardan tal cual llegan del renderer (magnets + poster de IMDb).
+    if (movie.source !== 'lime') {
+      try { full = { ...movie, ...(await fetchYifyDetails(movie.id)) }; } catch {}
+    }
     await favorites.add(full);
     return { ok: true };
   } catch (e) {
@@ -727,15 +853,35 @@ ipcMain.handle('finances:save-description', (_e, { accountId, text }) =>
 ipcMain.handle('finances:set-hidden', (_e, hidden) => finances.setHidden(hidden));
 ipcMain.handle('finances:record-fx', (_e, { ym, rate }) => finances.recordFx(ym, rate));
 ipcMain.handle('finances:mongo-status', () => finances.getMongoStatus());
-// "Sincronizar bases" reconcilia Finanzas y también los favoritos de YIFY
-// (misma base de Mongo). La UI muestra el estado de Finanzas.
-ipcMain.handle('finances:sync', async () => {
-  const [st] = await Promise.all([
-    finances.syncNow(),
-    favorites.syncNow().catch(() => {}),
-  ]);
-  return st;
-});
+// Sincronización automática de las bases (Finanzas + favoritos + archivo de
+// LimeTorrents, YIFY, EZTV y CheapShark, misma Mongo): corre al arranque y
+// cada SYNC_INTERVAL_MS.
+// Siempre ADITIVA — cada lado sube lo que al otro le falta y nada se borra ni
+// se pisa (una instalación nueva baja todo el histórico en vez de subir su
+// base vacía). Reemplaza al viejo botón "Sincronizar bases" de Settings.
+const DB_SYNC_INTERVAL_MS = 15 * 60 * 1000;
+let dbSyncRunning = false;
+async function syncDatabases() {
+  if (dbSyncRunning) return;
+  dbSyncRunning = true;
+  let st = null;
+  try {
+    [st] = await Promise.all([
+      finances.syncNow().catch(() => null),
+      favorites.syncNow().catch(() => {}),
+      limeArchive.syncNow().catch(() => {}),
+      yifyArchive.syncNow().catch(() => {}),
+      eztvArchive.syncNow().catch(() => {}),
+      gamesArchive.syncNow().catch(() => {}),
+    ]);
+  } finally {
+    dbSyncRunning = false;
+  }
+  // El renderer refresca Finanzas y muestra "última sincronización" en Settings.
+  if (win) {
+    try { win.webContents.send('db-synced', { ok: !!(st && st.ok), at: Date.now() }); } catch {}
+  }
+}
 ipcMain.handle('finances:list-expenses', () => finances.listExpenses());
 ipcMain.handle('finances:add-expense', (_e, payload) => finances.addExpense(payload));
 ipcMain.handle('finances:update-expense', (_e, payload) => finances.updateExpense(payload));
@@ -789,14 +935,46 @@ ipcMain.on('resize-content', (_e, height) => {
 });
 
 // ── Lifecycle ──────────────────────────────────────────────────
+// Una sola instancia. Con dos abiertas (el arranque automático de Windows más
+// un doble click, por ejemplo) hay dos crawlers y dos copias en memoria de los
+// mismos .sqlite: sql.js vuelca el archivo ENTERO en cada guardado, así que la
+// última en escribir pisa lo que hizo la otra — se pierden páginas del archivo
+// y el cursor del backfill retrocede. La segunda instancia se cierra y trae al
+// frente la ventana de la primera.
+const gotSingleInstanceLock = app.requestSingleInstanceLock();
+if (!gotSingleInstanceLock) {
+  app.quit();
+} else {
+  app.on('second-instance', () => {
+    if (!win) { createWindow(); return; }
+    if (win.isMinimized()) win.restore();
+    win.show();
+    win.focus();
+  });
+}
+
 app.whenReady().then(() => {
+  if (!gotSingleInstanceLock) return;   // la segunda instancia solo se cierra
   createWindow();
   createTray();
   streaming.sweep();   // limpia restos de streams de una sesión anterior
   transcode.sweep();   // ídem para segmentos HLS huérfanos
+  syncDatabases();     // sync inicial de las bases (aditivo, best-effort)
+  setInterval(syncDatabases, DB_SYNC_INTERVAL_MS);
+  archiveCrawl.start();   // backfill de los catálogos, en segundo plano
   app.on('activate', () => { if (!win) createWindow(); });
 });
 
 // Tray keeps the app alive after window-all-closed.
 app.on('window-all-closed', (e) => { e.preventDefault(); });
-app.on('before-quit', () => { isQuitting = true; transcode.stopAll(); streaming.stopAll(); });
+app.on('before-quit', () => {
+  isQuitting = true;
+  transcode.stopAll();
+  streaming.stopAll();
+  // Los archivos históricos guardan diferido (reescribir 80 MB en cada ingest
+  // congelaría la UI): acá se vuelca lo que quedó en memoria.
+  archiveCrawl.stop();
+  yifyArchive.flush();
+  eztvArchive.flush();
+  gamesArchive.flush();
+});

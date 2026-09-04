@@ -219,4 +219,7 @@ async function searchShows(query) {
   return { shows };
 }
 
-module.exports = { checkEztv, fetchEztvTorrents, fetchEztvShows, searchShows };
+// showNameFrom e imdbMeta los reusa el archivo histórico (eztvArchive.js) y
+// el crawler: el nombre parseado agrupa por serie y la ficha se guarda una
+// sola vez en la base en vez de re-pedirse en cada listado.
+module.exports = { checkEztv, fetchEztvTorrents, fetchEztvShows, searchShows, showNameFrom, imdbMeta };

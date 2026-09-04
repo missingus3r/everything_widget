@@ -2,10 +2,14 @@
 // GET → JSON con timeout y User-Agent de browser (algunas APIs — Reddit,
 // IMDb — rechazan UAs "raros"). Tira en HTTP >= 400 salvo que okStatus diga
 // otra cosa; cada módulo decide cómo degradar.
+//
+// getJsonRes() devuelve además los headers de la respuesta: CheapShark publica
+// el total de páginas en X-Total-Page-Count y el crawler del archivo lo
+// necesita para saber cuándo terminó una tienda.
 
 const https = require('https');
 
-function getJson(url, { timeoutMs = 10000, headers = {} } = {}) {
+function getJsonRes(url, { timeoutMs = 10000, headers = {} } = {}) {
   return new Promise((resolve, reject) => {
     const req = https.get(url, {
       headers: {
@@ -17,7 +21,7 @@ function getJson(url, { timeoutMs = 10000, headers = {} } = {}) {
       // Redirects (Reddit y Nager los usan a veces): seguir una vez.
       if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
         res.resume();
-        getJson(new URL(res.headers.location, url).href, { timeoutMs, headers }).then(resolve, reject);
+        getJsonRes(new URL(res.headers.location, url).href, { timeoutMs, headers }).then(resolve, reject);
         return;
       }
       if (res.statusCode && res.statusCode >= 400) {
@@ -29,7 +33,7 @@ function getJson(url, { timeoutMs = 10000, headers = {} } = {}) {
       res.setEncoding('utf8');
       res.on('data', (c) => { buf += c; });
       res.on('end', () => {
-        try { resolve(JSON.parse(buf)); }
+        try { resolve({ data: JSON.parse(buf), headers: res.headers }); }
         catch { reject(new Error('respuesta no es JSON')); }
       });
     });
@@ -38,4 +42,6 @@ function getJson(url, { timeoutMs = 10000, headers = {} } = {}) {
   });
 }
 
-module.exports = { getJson };
+const getJson = (url, opts) => getJsonRes(url, opts).then((r) => r.data);
+
+module.exports = { getJson, getJsonRes };

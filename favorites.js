@@ -24,7 +24,8 @@ let db = null;
 
 const SCHEMA = `
   CREATE TABLE IF NOT EXISTS favorites (
-    id        INTEGER PRIMARY KEY,        -- id de YIFY (= _id en Mongo)
+    id        INTEGER PRIMARY KEY,        -- id de YIFY, o negativo para LimeTorrents (= _id en Mongo)
+    source    TEXT,                       -- 'yify' | 'lime' (NULL = yify, favoritos viejos)
     title     TEXT    NOT NULL,
     year      INTEGER,
     rating    REAL,
@@ -93,6 +94,7 @@ function migrate() {
     return res.length ? res[0].values.map((r) => r[1]) : [];
   };
   if (!colsOf('favorites').includes('folder_id')) db.run('ALTER TABLE favorites ADD COLUMN folder_id INTEGER');
+  if (!colsOf('favorites').includes('source')) db.run('ALTER TABLE favorites ADD COLUMN source TEXT');
   if (!colsOf('fav_folders').includes('parent_id')) db.run('ALTER TABLE fav_folders ADD COLUMN parent_id INTEGER');
 }
 
@@ -130,7 +132,7 @@ function toBuf(v) {
 
 function rowToFav(r) {
   return {
-    id: r.id, title: r.title,
+    id: r.id, source: r.source === 'lime' ? 'lime' : 'yify', title: r.title,
     year: r.year ?? null, rating: r.rating ?? null, runtime: r.runtime ?? null,
     genres: parse(r.genres, []), synopsis: r.synopsis || '',
     trailer: r.trailer || null, url: r.url || null,
@@ -143,7 +145,7 @@ function rowToFav(r) {
 
 function docToFav(d) {
   return {
-    id: Number(d._id), title: d.title,
+    id: Number(d._id), source: d.source === 'lime' ? 'lime' : 'yify', title: d.title,
     year: d.year ?? null, rating: d.rating ?? null, runtime: d.runtime ?? null,
     genres: Array.isArray(d.genres) ? d.genres : [], synopsis: d.synopsis || '',
     trailer: d.trailer || null, url: d.url || null,
@@ -158,7 +160,7 @@ function docToFav(d) {
 // (el driver serializa el Buffer solo). _id = id de YIFY.
 function favToDoc(f) {
   return {
-    _id: f.id, title: f.title,
+    _id: f.id, source: f.source || 'yify', title: f.title,
     year: f.year, rating: f.rating, runtime: f.runtime,
     genres: f.genres, synopsis: f.synopsis,
     trailer: f.trailer, url: f.url,
@@ -172,10 +174,10 @@ function favToDoc(f) {
 function writeRow(f) {
   db.run(
     'INSERT OR REPLACE INTO favorites ' +
-    '(id, title, year, rating, runtime, genres, synopsis, trailer, url, cover_url, cover, cover_mime, cast, torrents, folder_id, added_at) ' +
-    'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    '(id, source, title, year, rating, runtime, genres, synopsis, trailer, url, cover_url, cover, cover_mime, cast, torrents, folder_id, added_at) ' +
+    'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
     [
-      Number(f.id), String(f.title),
+      Number(f.id), f.source || 'yify', String(f.title),
       f.year == null ? null : Number(f.year),
       f.rating == null ? null : Number(f.rating),
       f.runtime == null ? null : Number(f.runtime),
@@ -293,10 +295,13 @@ function readSeriesRows() {
   return rows;
 }
 
-// ── Reconciliación al arranque (espejo del patrón de Finanzas) ───────────────
+// ── Reconciliación (arranque + periódica), SIEMPRE aditiva ───────────────────
 // Sube los favoritos que Mongo no tiene ($setOnInsert preserva lo creado
-// offline sin pisar lo remoto) y baja la copia autoritativa a SQLite.
-// Cubre películas (YIFY) y episodios de series (EZTV).
+// offline sin pisar lo remoto) y baja lo remoto con merge: writeRow es
+// INSERT OR REPLACE, así que lo remoto actualiza filas con el mismo id y lo
+// solo-local queda intacto — nunca se borra nada de ningún lado. Una base
+// recién instalada baja todo; una Mongo vacía recibe todo lo local.
+// Cubre películas (YIFY + LimeTorrents), episodios (EZTV) y carpetas.
 async function reconcile() {
   try {
     const cols = await favCols();
@@ -315,32 +320,24 @@ async function reconcile() {
       cols.series.find({}).toArray(),
       cols.folders.find({}).toArray(),
     ]);
-    // Solo conservamos folder_id que apunte a una carpeta existente (evita
-    // huérfanos si una carpeta se borró en otra máquina).
-    const folderIds = new Set(folderDocs.map((d) => Number(d._id)));
     db.run('BEGIN TRANSACTION');
     try {
-      db.run('DELETE FROM favorites');
-      db.run('DELETE FROM series_favorites');
-      db.run('DELETE FROM fav_folders');
-      folderDocs.forEach((d) => {
-        const f = docToFolder(d);
-        if (f.parentId != null && !folderIds.has(Number(f.parentId))) f.parentId = null;
-        writeFolderRow(f);
-      });
-      movieDocs.forEach((d) => {
-        const f = docToFav(d);
-        if (f.folderId != null && !folderIds.has(Number(f.folderId))) f.folderId = null;
-        writeRow(f);
-      });
+      folderDocs.forEach((d) => writeFolderRow(docToFolder(d)));
+      movieDocs.forEach((d) => writeRow(docToFav(d)));
       seriesDocs.forEach((d) => writeSeriesRow(docToSfav(d)));
+      // Referencias a carpetas que no existen en el conjunto final (local ∪
+      // remoto) vuelven a la raíz — evita huérfanos sin borrar películas.
+      const ids = readFolderRows().map((f) => Number(f.id));
+      const inList = ids.length ? ids.join(',') : '0';
+      db.run(`UPDATE favorites SET folder_id = NULL WHERE folder_id IS NOT NULL AND folder_id NOT IN (${inList})`);
+      db.run(`UPDATE fav_folders SET parent_id = NULL WHERE parent_id IS NOT NULL AND parent_id NOT IN (${inList})`);
       db.run('COMMIT');
     } catch (err) {
       db.run('ROLLBACK');
       throw err;
     }
     persist();
-    console.log(`[favorites] synced from Mongo: ${movieDocs.length} películas, ${seriesDocs.length} series, ${folderDocs.length} carpetas`);
+    console.log(`[favorites] synced with Mongo: ${movieDocs.length} películas, ${seriesDocs.length} series, ${folderDocs.length} carpetas`);
   } catch (e) {
     console.warn('[favorites] mongo sync failed, SQLite-only:', e.message);
   }
@@ -398,7 +395,9 @@ async function add(movie) {
   // Re-guardar un favorito no debe sacarlo de su carpeta: si ya existe,
   // conservamos su folder_id salvo que el caller pida uno explícito.
   const fav = {
-    id: Number(movie.id), title: String(movie.title),
+    id: Number(movie.id),
+    source: movie.source === 'lime' ? 'lime' : 'yify',
+    title: String(movie.title),
     year: movie.year == null ? null : Number(movie.year),
     rating: movie.rating == null ? null : Number(movie.rating),
     runtime: movie.runtime == null ? null : Number(movie.runtime),
@@ -446,7 +445,7 @@ async function getIds() {
 async function list() {
   await ensure();
   return readRows().map((f) => ({
-    id: f.id, title: f.title, year: f.year, rating: f.rating, runtime: f.runtime,
+    id: f.id, source: f.source, title: f.title, year: f.year, rating: f.rating, runtime: f.runtime,
     genres: f.genres, synopsis: f.synopsis, trailer: f.trailer, url: f.url,
     cover: f.cover
       ? `data:${f.coverMime || 'image/jpeg'};base64,${f.cover.toString('base64')}`

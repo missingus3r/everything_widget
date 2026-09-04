@@ -7,6 +7,7 @@ config.json
 
 # Finances data
 *.sqlite
+*.sqlite.tmp
 finances.sqlite
 
 # Per-machine runtime state

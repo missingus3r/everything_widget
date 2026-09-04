@@ -241,7 +241,10 @@
         </div>
         <div class="dash-media-split">
           <div class="dash-media-col">
-            <div class="dash-media-label">🎬 Películas <span class="mkt-src">· YIFY</span></div>
+            <div class="dash-media-label">🎬 Películas
+              <span class="db-status dash-api-chip checking" id="dash-yify-chip" title="YIFY: verificando…"><span class="db-dot"></span>YIFY</span>
+              <span class="db-status dash-api-chip checking" id="dash-lime-chip" title="LimeTorrents: verificando…"><span class="db-dot"></span>LIME</span>
+            </div>
             <div id="yify-dash" class="dash-media-grid"></div>
           </div>
           <div class="dash-media-col dash-media-col-sep">
@@ -410,17 +413,10 @@
     </div>
 
     <div class="screen hidden" id="tab-torrents">
-      <section class="card">
-        <div class="card-head">
-          <span class="card-title">🎬 Torrents Films <span class="mkt-src">· YIFY</span></span>
-          <span class="card-head-right">
-            <span class="db-status" id="yify-status">
-              <span class="db-dot"></span>
-              <span id="yify-status-text">Verificando…</span>
-            </span>
-            <button id="yify-refresh" class="mini-refresh" title="Actualizar">↻</button>
-          </span>
-        </div>
+      <!-- Barra de controles del TAB (fuera de los cards): el buscador, el
+           toggle de vista y los filtros mandan sobre las dos fuentes del tab
+           (YIFY y LimeTorrents) a la vez. -->
+      <div class="tab-toolbar" id="films-toolbar">
         <div class="yify-search-row">
           <input id="yify-search" class="fin-input" placeholder="Buscar por título, actor o director… (Enter)" autocomplete="off">
           <div class="yify-view-toggle" id="yify-view-toggle">
@@ -432,7 +428,7 @@
           <button id="yify-search-btn" class="fin-btn">Buscar</button>
         </div>
         <div class="yify-search-row yify-filters">
-          <select id="yify-genre" class="fin-select" title="Género">
+          <select id="yify-genre" class="fin-select" title="Género (solo YIFY: el RSS de LimeTorrents no trae géneros)">
             <option value="">Todos los géneros</option>
             <option value="action">Acción</option>
             <option value="adventure">Aventura</option>
@@ -454,21 +450,21 @@
             <option value="war">Guerra</option>
             <option value="western">Western</option>
           </select>
-          <select id="yify-quality" class="fin-select" title="Calidad">
+          <select id="yify-quality" class="fin-select" title="Calidad (solo YIFY)">
             <option value="">Toda calidad</option>
             <option value="720p">720p</option>
             <option value="1080p">1080p</option>
             <option value="2160p">2160p (4K)</option>
             <option value="3D">3D</option>
           </select>
-          <select id="yify-minrating" class="fin-select" title="Rating mínimo (IMDb)">
+          <select id="yify-minrating" class="fin-select" title="Rating mínimo IMDb (solo YIFY: el RSS no trae rating)">
             <option value="0">Rating: todos</option>
             <option value="5">★ 5+</option>
             <option value="6">★ 6+</option>
             <option value="7">★ 7+</option>
             <option value="8">★ 8+</option>
           </select>
-          <select id="yify-sort" class="fin-select" title="Ordenar por">
+          <select id="yify-sort" class="fin-select" title="Ordenar por (solo YIFY; Lime siempre va por fecha de subida)">
             <option value="date_added">Recientes</option>
             <option value="rating">Rating</option>
             <option value="download_count">Descargas</option>
@@ -476,11 +472,45 @@
             <option value="year">Año</option>
           </select>
         </div>
+      </div>
+
+      <section class="card">
+        <div class="card-head">
+          <span class="card-title">🎬 Torrents Films <span class="mkt-src">· YIFY</span></span>
+          <span class="card-head-right">
+            <span class="db-status" id="yify-status">
+              <span class="db-dot"></span>
+              <span id="yify-status-text">Verificando…</span>
+            </span>
+            <button id="yify-refresh" class="mini-refresh" title="Actualizar">↻</button>
+          </span>
+        </div>
         <div id="yify-fav-bar" class="yify-fav-bar" hidden></div>
         <div id="yify-list" class="yify-grid">
           <div class="ai-loading">Verificando API…</div>
         </div>
         <div id="yify-pager" class="yify-pager"></div>
+      </section>
+
+      <!-- Últimas subidas de películas vía el feed RSS de LimeTorrents.
+           Segunda fuente del tab: cards como las de YIFY — releases agrupados
+           por película + poster de IMDb + magnets. La barra del tab (buscador,
+           vista, filtros) también manda acá. -->
+      <section class="card">
+        <div class="card-head">
+          <span class="card-title">🎬 Últimos Films <span class="mkt-src">· LimeTorrents RSS</span></span>
+          <span class="card-head-right">
+            <span class="db-status" id="lime-status">
+              <span class="db-dot"></span>
+              <span id="lime-status-text">Verificando…</span>
+            </span>
+            <button id="lime-refresh" class="mini-refresh" title="Actualizar">↻</button>
+          </span>
+        </div>
+        <div id="lime-list" class="yify-grid">
+          <div class="ai-loading">Verificando RSS…</div>
+        </div>
+        <div id="lime-pager" class="yify-pager"></div>
       </section>
     </div>
 
@@ -499,6 +529,23 @@
         </div>
       </section>
 
+      <!-- Barra de controles del TAB (fuera de los cards): buscador y toggle
+           de vista mandan sobre EZTV y LimeTorrents a la vez. -->
+      <div class="tab-toolbar" id="series-toolbar">
+        <div class="yify-search-row">
+          <input id="ez-search" class="fin-input" placeholder="Buscar serie por nombre… (Enter)" autocomplete="off">
+          <div class="yify-view-toggle" id="ez-view-toggle">
+            <button class="yify-view-btn" data-view="grid" title="Vista tarjetas">▦</button>
+            <button class="yify-view-btn" data-view="icons" title="Vista iconos pequeños">▩</button>
+            <button class="yify-view-btn" data-view="list" title="Vista lista con detalles">☰</button>
+          </div>
+          <button id="ez-favs-btn" class="yify-view-btn yify-favs-btn" title="Favoritos guardados (funcionan aunque la API muera)">♥</button>
+          <button id="ez-search-btn" class="fin-btn">Buscar</button>
+        </div>
+        <!-- Resultados de IMDb (chips de series): click → modal de la serie. -->
+        <div id="ez-shows" class="ez-shows"></div>
+      </div>
+
       <section class="card">
         <div class="card-head">
           <span class="card-title">📺 Torrents Series <span class="mkt-src">· EZTV</span></span>
@@ -510,21 +557,68 @@
             <button id="ez-refresh" class="mini-refresh" title="Actualizar">↻</button>
           </span>
         </div>
-        <div class="yify-search-row">
-          <input id="ez-search" class="fin-input" placeholder="Buscar serie por nombre… (Enter)" autocomplete="off">
-          <button id="ez-favs-btn" class="yify-view-btn yify-favs-btn" title="Favoritos guardados (funcionan aunque la API muera)">♥</button>
-          <button id="ez-search-btn" class="fin-btn">Buscar</button>
-        </div>
-        <!-- Resultados de IMDb (chips de series): click → modal de la serie. -->
-        <div id="ez-shows" class="ez-shows"></div>
         <div id="ez-list" class="yify-table">
           <div class="ai-loading">Verificando API…</div>
         </div>
         <div id="ez-pager" class="yify-pager"></div>
       </section>
+
+      <!-- Últimas subidas de series vía el RSS de LimeTorrents (/rss/20/):
+           cards por serie (como EZTV) con el modal de serie al click. La
+           búsqueda del tab (ez-search) también busca acá. -->
+      <section class="card">
+        <div class="card-head">
+          <span class="card-title">📺 Últimas Series <span class="mkt-src">· LimeTorrents RSS</span></span>
+          <span class="card-head-right">
+            <span class="db-status" id="lime-tv-status">
+              <span class="db-dot"></span>
+              <span id="lime-tv-status-text">Verificando…</span>
+            </span>
+            <button id="lime-tv-refresh" class="mini-refresh" title="Actualizar">↻</button>
+          </span>
+        </div>
+        <div id="lime-tv-list" class="ez-cards-grid">
+          <div class="ai-loading">Verificando RSS…</div>
+        </div>
+        <div id="lime-tv-pager" class="yify-pager"></div>
+      </section>
     </div>
 
     <div class="screen hidden" id="tab-juegos">
+      <!-- Barra de controles del TAB (fuera de los cards): buscador, toggle de
+           vista y filtros mandan sobre CheapShark y LimeTorrents a la vez
+           (los filtros de tienda/precio son propios de CheapShark). -->
+      <div class="tab-toolbar" id="juegos-toolbar">
+        <div class="yify-search-row">
+          <input id="gd-search" class="fin-input" placeholder="Buscar juego por título… (Enter)" autocomplete="off">
+          <div class="yify-view-toggle" id="gd-view-toggle">
+            <button class="yify-view-btn" data-view="grid" title="Vista tarjetas">▦</button>
+            <button class="yify-view-btn" data-view="icons" title="Vista iconos pequeños">▩</button>
+            <button class="yify-view-btn" data-view="list" title="Vista lista con detalles">☰</button>
+          </div>
+          <button id="gd-search-btn" class="fin-btn">Buscar</button>
+        </div>
+        <div class="yify-search-row yify-filters">
+          <select id="gd-store" class="fin-select" title="Tienda (solo CheapShark)">
+            <option value="">Todas las tiendas</option>
+          </select>
+          <select id="gd-sort" class="fin-select" title="Ordenar por (solo CheapShark; Lime siempre va por fecha de subida)">
+            <option value="Deal Rating">Mejor oferta</option>
+            <option value="Savings">% de descuento</option>
+            <option value="Price">Precio</option>
+            <option value="Recent">Recientes</option>
+            <option value="Metacritic">Metacritic</option>
+          </select>
+          <select id="gd-maxprice" class="fin-select" title="Precio máximo (solo CheapShark)">
+            <option value="0">Sin tope</option>
+            <option value="5">Hasta U$S 5</option>
+            <option value="10">Hasta U$S 10</option>
+            <option value="20">Hasta U$S 20</option>
+            <option value="30">Hasta U$S 30</option>
+          </select>
+        </div>
+      </div>
+
       <section class="card">
         <div class="card-head">
           <span class="card-title">🎮 Ofertas de juegos <span class="mkt-src">· CheapShark · USD</span></span>
@@ -533,33 +627,30 @@
             <button id="gd-refresh" class="mini-refresh" title="Actualizar">↻</button>
           </span>
         </div>
-        <div class="yify-search-row">
-          <input id="gd-search" class="fin-input" placeholder="Buscar juego por título… (Enter)" autocomplete="off">
-          <button id="gd-search-btn" class="fin-btn">Buscar</button>
-        </div>
-        <div class="yify-search-row yify-filters">
-          <select id="gd-store" class="fin-select" title="Tienda">
-            <option value="">Todas las tiendas</option>
-          </select>
-          <select id="gd-sort" class="fin-select" title="Ordenar por">
-            <option value="Deal Rating">Mejor oferta</option>
-            <option value="Savings">% de descuento</option>
-            <option value="Price">Precio</option>
-            <option value="Recent">Recientes</option>
-            <option value="Metacritic">Metacritic</option>
-          </select>
-          <select id="gd-maxprice" class="fin-select" title="Precio máximo">
-            <option value="0">Sin tope</option>
-            <option value="5">Hasta U$S 5</option>
-            <option value="10">Hasta U$S 10</option>
-            <option value="20">Hasta U$S 20</option>
-            <option value="30">Hasta U$S 30</option>
-          </select>
-        </div>
         <div id="gd-list" class="gd-grid">
           <div class="ai-loading">Cargando ofertas…</div>
         </div>
         <div id="gd-pager" class="yify-pager"></div>
+      </section>
+
+      <!-- Últimas subidas de juegos vía el RSS de LimeTorrents (/rss/8/):
+           cards por juego (como CheapShark) con capsule de Steam y magnets.
+           La búsqueda del tab (gd-search) también busca acá. -->
+      <section class="card">
+        <div class="card-head">
+          <span class="card-title">🎮 Torrents Juegos <span class="mkt-src">· LimeTorrents RSS</span></span>
+          <span class="card-head-right">
+            <span class="db-status" id="lime-games-status">
+              <span class="db-dot"></span>
+              <span id="lime-games-status-text">Verificando…</span>
+            </span>
+            <button id="lime-games-refresh" class="mini-refresh" title="Actualizar">↻</button>
+          </span>
+        </div>
+        <div id="lime-games-list" class="gd-grid">
+          <div class="ai-loading">Verificando RSS…</div>
+        </div>
+        <div id="lime-games-pager" class="yify-pager"></div>
       </section>
     </div>
 
@@ -668,17 +759,18 @@
 
         <div class="setting-block">
           <div class="setting-text">
-            <span class="setting-label">Base de datos · Finanzas</span>
-            <span class="setting-desc">MongoDB es la base primaria; SQLite es el espejo local. Sincronizar baja los datos de Mongo a SQLite.</span>
+            <span class="setting-label">Bases de datos</span>
+            <span class="setting-desc">MongoDB primaria + espejo SQLite (Finanzas, favoritos y los archivos históricos de LimeTorrents, YIFY, EZTV y CheapShark). Se sincronizan solas al inicio y cada 15 minutos, siempre sumando lo que falte de cada lado — nunca se pisan datos.</span>
           </div>
           <div class="db-row">
             <span class="db-status" id="mongo-status">
               <span class="db-dot"></span>
               <span id="mongo-status-text">Verificando…</span>
             </span>
-            <button class="db-sync-btn" id="btn-sync-db" type="button">Sincronizar bases</button>
           </div>
+          <div class="setting-status" id="mongo-space"></div>
           <div class="setting-status" id="sync-status"></div>
+          <div class="setting-status" id="archive-status"></div>
         </div>
 
         <div class="setting-block">

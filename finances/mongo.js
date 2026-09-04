@@ -22,6 +22,20 @@ const { loadConfig } = require('../config');
 const DB_NAME = 'system_dashboard_widget';
 // How long to wait for a server before giving up and falling back to SQLite-only.
 const CONNECT_TIMEOUT_MS = 8000;
+// El cluster no expone su límite de almacenamiento por el driver (habría que
+// ir a la Admin API de Atlas con credenciales aparte), así que Settings muestra
+// lo ocupado a secas. Si querés que además calcule el porcentaje y avise al
+// acercarse, poné el tope de tu plan en config.json como `mongoStorageLimitMb`.
+// Lo que NO se supone es el aviso rojo: ese sale solo cuando Atlas rechazó
+// realmente una escritura por falta de espacio.
+const USAGE_TTL_MS = 60 * 1000;
+
+function storageLimitBytes() {
+  try {
+    const mb = Number(loadConfig().mongoStorageLimitMb);
+    return mb > 0 ? mb * 1024 * 1024 : null;
+  } catch { return null; }
+}
 
 let client = null;       // MongoClient once connected
 let database = null;     // Db handle once connected
@@ -79,7 +93,7 @@ async function connect() {
     // Force server selection now so an unreachable cluster fails here, not later.
     await c.db(DB_NAME).command({ ping: 1 });
     client = c;
-    database = c.db(DB_NAME);
+    database = watchDb(c.db(DB_NAME));
     console.log('[finances/mongo] connected');
     return database;
   })().catch((err) => {
@@ -88,6 +102,85 @@ async function connect() {
     return null;
   });
   return connectPromise;
+}
+
+// ── Espacio del cluster ─────────────────────────────────────────────────────
+// Cuando Atlas se queda sin espacio deja de aceptar escrituras y cada módulo
+// se entera por su lado (un catch que loguea y sigue en SQLite). Para que el
+// widget lo pueda contar en un solo lugar, el rechazo se registra acá.
+
+let quotaState = { blocked: false, at: 0, message: '' };
+
+function isQuotaError(e) {
+  const msg = String((e && e.message) || e || '');
+  return /over your space quota|space quota|quota exceeded|over its data limit|space limit/i.test(msg);
+}
+
+// Lo llama el envoltorio de las colecciones ante CUALQUIER escritura fallida;
+// solo deja marca si el motivo fue la falta de espacio.
+function noteError(e) {
+  if (!isQuotaError(e)) return false;
+  if (!quotaState.blocked) {
+    console.warn('[finances/mongo] el cluster no tiene más espacio — todo sigue en SQLite:', String(e && e.message || e));
+  }
+  quotaState = { blocked: true, at: Date.now(), message: String((e && e.message) || e) };
+  return true;
+}
+
+function getQuotaState() {
+  return { ...quotaState, limit: storageLimitBytes() };
+}
+
+// Tamaño ocupado (dbStats), cacheado: Settings lo pide cada vez que se abre y
+// no tiene sentido preguntarle al cluster en cada pasada.
+let usageCache = { at: 0, value: null };
+async function usage() {
+  if (Date.now() - usageCache.at < USAGE_TTL_MS) return usageCache.value;
+  let value = null;
+  try {
+    const dbh = await connect();
+    if (dbh) {
+      const st = await dbh.stats();
+      value = {
+        bytes: (st.storageSize || 0) + (st.indexSize || 0),
+        dataSize: st.dataSize || 0,
+        objects: st.objects || 0,
+      };
+    }
+  } catch { value = null; }
+  usageCache = { at: Date.now(), value };
+  return value;
+}
+
+// Todas las escrituras del widget pasan por dbh.collection(...), así que
+// envolver ese handle alcanza para enterarse de un "sin espacio" venga del
+// módulo que venga, sin tener que acordarse de reportarlo en cada catch.
+const WRITE_OPS = ['insertOne', 'insertMany', 'updateOne', 'updateMany',
+  'replaceOne', 'deleteOne', 'deleteMany', 'bulkWrite', 'findOneAndUpdate'];
+
+function watchWrites(coll) {
+  return new Proxy(coll, {
+    get(target, prop, receiver) {
+      const value = Reflect.get(target, prop, receiver);
+      if (typeof value !== 'function' || !WRITE_OPS.includes(prop)) return value;
+      return (...args) => {
+        const out = value.apply(target, args);
+        if (out && typeof out.catch === 'function') {
+          return out.catch((e) => { noteError(e); throw e; });
+        }
+        return out;
+      };
+    },
+  });
+}
+
+function watchDb(dbh) {
+  return new Proxy(dbh, {
+    get(target, prop, receiver) {
+      if (prop !== 'collection') return Reflect.get(target, prop, receiver);
+      return (...args) => watchWrites(target.collection(...args));
+    },
+  });
 }
 
 function snapshotId(account, ts) { return `${account}_${ts}`; }
@@ -217,4 +310,5 @@ module.exports = {
   upsertSnapshot, upsertSetting, upsertExpense,
   deleteExpense, deleteSnapshotsByAccount, deleteAllSnapshots,
   fetchAll, seedUpIfMissing, close,
+  isQuotaError, noteError, getQuotaState, usage,
 };

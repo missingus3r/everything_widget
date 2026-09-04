@@ -6,20 +6,10 @@
 // { error } object the renderer turns into an "API caída" state.
 
 const https = require('https');
+const { magnetFor } = require('./magnet');
 
 const YIFY_API = 'https://movies-api.accel.li/api/v2';
 const YIFY_BASE = `${YIFY_API}/list_movies.json`;
-
-// Standard public trackers YTS recommends for building magnet links.
-const TRACKERS = [
-  'udp://open.demonii.com:1337/announce',
-  'udp://tracker.openbittorrent.com:80',
-  'udp://tracker.coppersurfer.tk:6969',
-  'udp://tracker.opentrackr.org:1337/announce',
-  'udp://torrent.gresille.org:80/announce',
-  'udp://p4p.arenabg.com:1337',
-  'udp://tracker.leechers-paradise.org:6969',
-];
 
 function getJson(url, timeoutMs = 10000) {
   return new Promise((resolve, reject) => {
@@ -42,31 +32,34 @@ function getJson(url, timeoutMs = 10000) {
   });
 }
 
-function magnetFor(hash, title) {
-  const dn = encodeURIComponent(title || 'movie');
-  const trs = TRACKERS.map((t) => '&tr=' + encodeURIComponent(t)).join('');
-  return `magnet:?xt=urn:btih:${hash}&dn=${dn}${trs}`;
-}
-
+// Forma normalizada que consume el renderer. `titleLong`, `uploadedAt`,
+// `downloads` y el `hash` de cada torrent son lo que el archivo histórico
+// (yifyArchive.js) necesita para guardar la fila y rearmar los magnets.
 function normalizeMovie(m) {
   return {
     id: m.id,
     url: m.url || null,                       // yts page
     imdb: m.imdb_code || null,                // ttXXXXXXX — para buscar subtítulos
     title: m.title_english || m.title || '—',
+    titleLong: m.title_long || null,
     year: m.year || null,
     rating: typeof m.rating === 'number' ? m.rating : null,
     runtime: m.runtime || null,
-    genres: Array.isArray(m.genres) ? m.genres.slice(0, 3) : [],
+    genres: Array.isArray(m.genres) ? m.genres : [],
     cover: m.medium_cover_image || m.small_cover_image || null,
     synopsis: m.summary || m.synopsis || '',
     trailer: m.yt_trailer_code ? `https://www.youtube.com/watch?v=${m.yt_trailer_code}` : null,
+    // list_movies.json no trae download_count (sí movie_details.json): queda
+    // en null hasta que se abra la ficha de la película.
+    downloads: typeof m.download_count === 'number' ? m.download_count : null,
+    uploadedAt: m.date_uploaded_unix ? m.date_uploaded_unix * 1000 : null,
     torrents: (Array.isArray(m.torrents) ? m.torrents : []).map((t) => ({
       quality: t.quality || '?',
       type: t.type || '',
       size: t.size || '',
       seeds: t.seeds ?? null,
       peers: t.peers ?? null,
+      hash: t.hash || null,
       url: t.url || null,                     // .torrent file
       magnet: t.hash ? magnetFor(t.hash, `${m.title_long || m.title}`) : null,
     })),
@@ -88,13 +81,14 @@ async function checkYify() {
 // List/search movies. Throws on failure — the IPC handler converts to { error }.
 async function fetchYifyMovies({
   limit = 12, page = 1, query = '', sort = 'date_added',
-  genre = '', quality = '', minRating = 0,
+  genre = '', quality = '', minRating = 0, order = '',
 } = {}) {
   const params = new URLSearchParams({
     limit: String(Math.max(1, Math.min(50, limit))),
     page: String(Math.max(1, page)),
     sort_by: sort,
   });
+  if (order) params.set('order_by', order);
   if (query) params.set('query_term', query);
   if (genre) params.set('genre', genre);
   if (quality) params.set('quality', quality);

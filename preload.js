@@ -21,6 +21,7 @@ contextBridge.exposeInMainWorld('api', {
   sendCodexUsage:  (data) => ipcRenderer.send('codex-usage-updated',  data),
   sendElevenUsage: (data) => ipcRenderer.send('eleven-usage-updated', data),
   onRefresh:       (cb)   => ipcRenderer.on('trigger-refresh', cb),
+  onDbSynced:      (cb)   => ipcRenderer.on('db-synced', (_e, info) => cb(info)),
 
   finances: {
     getState:     ()        => ipcRenderer.invoke('finances:get-state'),
@@ -35,7 +36,6 @@ contextBridge.exposeInMainWorld('api', {
     setHidden:    (hidden)  => ipcRenderer.invoke('finances:set-hidden', hidden),
     recordFx:     (ym, rate)=> ipcRenderer.invoke('finances:record-fx', { ym, rate }),
     mongoStatus:  ()        => ipcRenderer.invoke('finances:mongo-status'),
-    syncDb:       ()        => ipcRenderer.invoke('finances:sync'),
     listExpenses: ()        => ipcRenderer.invoke('finances:list-expenses'),
     addExpense:   (payload) => ipcRenderer.invoke('finances:add-expense', payload),
     updateExpense:(payload) => ipcRenderer.invoke('finances:update-expense', payload),
@@ -47,6 +47,14 @@ contextBridge.exposeInMainWorld('api', {
     list:        (params) => ipcRenderer.invoke('yify:list', params),
     details:     (id)     => ipcRenderer.invoke('yify:details', id),
     suggestions: (id)     => ipcRenderer.invoke('yify:suggestions', id),
+  },
+
+  lime: {
+    check:   ()       => ipcRenderer.invoke('lime:check'),
+    list:    (params) => ipcRenderer.invoke('lime:list', params),
+    tvShows: ()       => ipcRenderer.invoke('lime:tv-shows'),
+    games:   ()       => ipcRenderer.invoke('lime:games'),
+    search:  (params) => ipcRenderer.invoke('lime:search', params),
   },
 
   stream: {
@@ -118,6 +126,10 @@ contextBridge.exposeInMainWorld('api', {
   stocks: {
     quotes:     ()        => ipcRenderer.invoke('stocks:quotes'),
     setSymbols: (symbols) => ipcRenderer.invoke('stocks:set-symbols', symbols),
+  },
+
+  archive: {
+    status: () => ipcRenderer.invoke('archive:status'),
   },
 
   apiStatus: {

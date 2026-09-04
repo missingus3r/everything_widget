@@ -7,5 +7,6 @@
   "refreshMinutesAI": 15,
   "stockSymbols": ["AAPL", "MSFT", "NVDA", "SPY", "VOO"],
   "elevenLabsApiKey": "",
-  "financesMongoUri": "mongodb+srv://user:pass@cluster.mongodb.net/system_dashboard_widget?retryWrites=true&w=majority"
+  "financesMongoUri": "mongodb+srv://user:pass@cluster.mongodb.net/system_dashboard_widget?retryWrites=true&w=majority",
+  "mongoStorageLimitMb": 0
 }

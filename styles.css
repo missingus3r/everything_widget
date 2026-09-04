@@ -167,6 +167,13 @@ body.maximized .widget::-webkit-scrollbar-track { background: transparent; }
 }
 .weather-icon { font-size: 33px; line-height: 1; }
 .weather-cell.now .weather-icon { font-size: 42.5px; }
+/* Luna con nube (noche, algo/parcialmente nublado): dos emoji superpuestos,
+   la nube tapa la parte baja de la luna. .few = nube chica (WMO 1). */
+.wx-moon-cloud { position: relative; display: inline-block; width: 1.2em; height: 1em; vertical-align: top; }
+.wx-moon-cloud .wx-moon, .wx-moon-cloud .wx-cloud { position: absolute; line-height: 1; }
+.wx-moon-cloud .wx-moon { left: 0; top: 0; font-size: 0.8em; }
+.wx-moon-cloud .wx-cloud { right: 0; bottom: 0; font-size: 0.72em; }
+.wx-moon-cloud.few .wx-cloud { font-size: 0.55em; right: 0.05em; }
 .weather-info { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
 .weather-when {
   font-size: 12px; color: #93c5fd;
@@ -768,6 +775,18 @@ body.maximized .widget::-webkit-scrollbar-track { background: transparent; }
 
 .screen.hidden { display: none; }
 
+/* Tabs con el alto del Dashboard: la screen activa (menos Dashboard, y menos
+   el modo maximizado donde scrollea el .widget entero) se fija a --tab-h y
+   scrollea por dentro cuando el contenido es más largo. */
+.screen.tab-scroll {
+  height: var(--tab-h, auto);
+  overflow-y: auto; overflow-x: hidden;
+}
+.screen.tab-scroll::-webkit-scrollbar { width: 8px; }
+.screen.tab-scroll::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.16); border-radius: 4px; }
+.screen.tab-scroll::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.28); }
+.screen.tab-scroll::-webkit-scrollbar-track { background: transparent; }
+
 /* ── Keys panel ───────────────────────────────── */
 .keys-content {
   display: flex; flex-direction: column;
@@ -955,6 +974,7 @@ body.maximized .widget::-webkit-scrollbar-track { background: transparent; }
   padding-left: 4px;
 }
 .setting-status.error { color: #ef4444; }
+.setting-status.warn { color: #fbbf24; }
 .setting-status.success { color: #4ade80; }
 
 /* ── Settings: Finanzas database block ──────────────────────── */
@@ -983,6 +1003,11 @@ body.maximized .widget::-webkit-scrollbar-track { background: transparent; }
 .db-status.disconnected .db-dot { background: #ef4444; box-shadow: 0 0 6px 0 rgba(239,68,68,0.5); }
 .db-status.checking .db-dot { background: #fbbf24; animation: db-pulse 1s ease-in-out infinite; }
 @keyframes db-pulse { 0%,100% { opacity: 0.35; } 50% { opacity: 1; } }
+
+/* Chips de estado YIFY/LIME en el card "Últimos estrenos" del dashboard:
+   variante mini del semáforo db-status, junto al label de la columna. */
+.dash-api-chip { font-size: 10px; gap: 4px; margin-left: 8px; letter-spacing: 0.4px; }
+.dash-api-chip .db-dot { width: 6px; height: 6px; }
 /* Settings: lista de APIs del sistema con verificador por fila. */
 .apis-list { display: flex; flex-direction: column; gap: 4px; }
 .api-row {
@@ -1115,6 +1140,32 @@ body.maximized .widget::-webkit-scrollbar-track { background: transparent; }
 .mkt-fx-cell { display: flex; flex-direction: column; align-items: flex-end; text-align: right; }
 .mkt-fx-val { font-size: 12.5px; font-weight: 600; color: #e4e4e7; }
 .mkt-fx-sub { font-size: 9.5px; color: #71717a; }
+
+/* Iconitos: cripto (SVG inline), logos de empresas (Finnhub) y banderas. */
+.mkt-ico {
+  width: 16px; height: 16px; flex-shrink: 0; align-self: center;
+  display: block; border-radius: 50%;
+}
+/* Muchos logos vienen en PNG transparente y oscuro (Apple), así que van sobre
+   un chip blanco para que no desaparezcan contra el card. */
+img.stk-logo {
+  border-radius: 4px; background: #fff; padding: 1px;
+  object-fit: contain;
+}
+.mkt-ico-fb {
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 4px; font-size: 8px; font-weight: 800; letter-spacing: -0.2px;
+}
+.mkt-flag {
+  width: 17px; height: 12px; flex-shrink: 0; display: block;
+  border-radius: 2px; box-shadow: 0 0 0 1px rgba(255,255,255,0.14);
+}
+.mkt-sub-title .mkt-flag {
+  display: inline-block; width: 15px; height: 11px;
+  margin-left: 4px; vertical-align: -1px;
+}
+.mkt-fx-cur { display: flex; align-items: center; gap: 5px; }
+.mkt-fx-cur-txt { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* ── Finanzas ───────────────────────────────────────────────── */
 .fin-total-row { display: flex; align-items: stretch; gap: 8px; }
@@ -1739,6 +1790,17 @@ select option { background-color: #1a1a1f; color: #e4e4e7; }
 }
 .yify-dash-meta { font-size: 11px; color: #71717a; font-variant-numeric: tabular-nums; }
 
+/* Barra de controles del tab: vive FUERA de los cards para que el buscador,
+   el toggle de vista y los filtros manden sobre las dos fuentes del tab
+   (YIFY/Lime, EZTV/Lime, CheapShark/Lime) al mismo tiempo. */
+.tab-toolbar {
+  display: flex; flex-direction: column; gap: 6px;
+  background: rgba(255,255,255,0.04);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 12px;
+  padding: 8px 12px;
+}
+
 /* Tab: búsqueda + grilla de películas con badges de calidad (magnet). */
 .yify-search-row { display: flex; gap: 6px; }
 .yify-grid {
@@ -1942,6 +2004,29 @@ select option { background-color: #1a1a1f; color: #e4e4e7; }
 .yify-td-mag { text-align: right; }
 .yify-q-mini { padding: 2px 6px; font-size: 12px; }
 
+/* Variantes de la vista lista por tab: mismas celdas .yify-td-*, otras
+   columnas. Series (tv-table) y juegos (gd-table). */
+.yify-table.tv-table .yify-tr { grid-template-columns: minmax(0, 1fr) 50px 58px 96px 104px; }
+.yify-table.gd-table .yify-tr { grid-template-columns: minmax(0, 1fr) 116px 74px 84px 84px 44px; }
+.yify-td-store {
+  font-size: 11px; color: #a1a1aa;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.yify-td-old { font-size: 11px; color: #71717a; text-decoration: line-through; text-align: right; }
+.yify-td-new { font-size: 11.5px; font-weight: 700; color: #4ade80; text-align: right; font-variant-numeric: tabular-nums; }
+
+/* Vista iconos de juegos: capsules de Steam/tienda (apaisadas), más densas. */
+.gd-icons-grid {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 8px;
+}
+.gd-icons-grid .ai-loading { grid-column: 1 / -1; }
+.gd-icons-grid .yify-dash-cell { position: relative; }
+.gd-icons-grid .yify-poster { aspect-ratio: 2.1 / 1; }
+.gd-icons-grid .yify-dash-title { font-size: 10.5px; }
+.gd-icons-grid .yify-dash-meta { font-size: 9.5px; }
+
 /* Favoritos: toggle de sección ♥ + corazones de like en las vistas. */
 .yify-favs-btn { color: #71717a; }
 .yify-favs-btn:hover { color: #fca5a5; }
@@ -1963,6 +2048,28 @@ select option { background-color: #1a1a1f; color: #e4e4e7; }
 .yify-fav-mini {
   position: static; display: inline-block;
   background: none; padding: 0 5px 0 0; font-size: 13px;
+}
+/* Chip de origen del favorito (YIFY / LIME) — abajo-izquierda del poster
+   (el ♥ ocupa arriba-izquierda y el rating arriba-derecha). */
+.fav-src {
+  position: absolute; left: 6px; bottom: 6px;
+  font-size: 9px; font-weight: 800; letter-spacing: 0.5px;
+  padding: 2px 6px; border-radius: 6px;
+  background: rgba(0,0,0,0.65);
+  pointer-events: none;
+}
+.fav-src-yify { color: #4ade80; }
+.fav-src-lime { color: #facc15; }
+/* En la vista iconos el pie de la celda es texto: el chip va arriba-derecha. */
+.yify-icons-grid .fav-src { top: 6px; right: 6px; left: auto; bottom: auto; }
+/* Dashboard "Últimos estrenos": chip de fuente sobre el poster de cada celda. */
+.dash-media-grid .yify-dash-cell { position: relative; }
+.dash-media-grid .fav-src { top: 6px; right: 6px; left: auto; bottom: auto; }
+/* Variante inline (vista lista y ficha). */
+.fav-src-inline {
+  position: static; display: inline-block;
+  margin-right: 6px; vertical-align: 1px;
+  background: rgba(255,255,255,0.06);
 }
 /* Botón de la ficha (modal). */
 .yify-fav-action.faved { color: #f87171; border-color: rgba(248,113,113,0.4); }
@@ -2135,6 +2242,14 @@ select option { background-color: #1a1a1f; color: #e4e4e7; }
 /* Tabla: columnas propias (♥, episodio, S·E, calidad, tamaño, seeds, leech,
    fecha, 🧲). Reusa las celdas .yify-td-*. */
 .ez-tr { grid-template-columns: 24px minmax(0, 1fr) 52px 52px 76px 44px 44px 52px 38px; }
+
+/* Tablas del RSS de LimeTorrents: series (con calidad) y juegos (sin).
+   Columnas: título, [calidad], tamaño, seeds, leech, fecha, 🧲. */
+/* Cards de juegos de LimeTorrents (reusan .gd-card de CheapShark): la
+   capsule de Steam es más ancha que el thumb de las ofertas, y los magnets
+   quedan pegados abajo de la card. */
+.lg-thumb { aspect-ratio: 2.65 / 1; }
+.gd-info .yify-quals { margin-top: auto; padding-top: 4px; }
 .ez-td-fav { display: flex; }
 .ez-td-title { cursor: default; }
 .ez-td-title:hover { color: #e4e4e7; }

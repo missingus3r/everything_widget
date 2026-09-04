@@ -92,7 +92,12 @@ tabButtons.forEach((btn) => {
 });
 
 // ── Auto-resize window to content ──────────────────────────────
+// El Dashboard define el alto de la ventana; el resto de tabs se fija a ese
+// mismo alto (clase .tab-scroll + --tab-h) y scrollea por dentro si su
+// contenido es más largo. En maximizado scrollea el .widget entero, así que
+// ahí no se fija nada.
 let resizeRaf = null;
+let dashHeight = 0;   // alto natural del dashboard (última medición visible)
 function adjustWindowSize() {
   if (resizeRaf) cancelAnimationFrame(resizeRaf);
   resizeRaf = requestAnimationFrame(() => {
@@ -101,8 +106,30 @@ function adjustWindowSize() {
     // Alto del top fijo (controles + menú): el reloj sticky se ancla debajo.
     const top = document.querySelector('.widget-top');
     if (top) document.documentElement.style.setProperty('--topbar-h', top.offsetHeight + 'px');
-    const h = Math.ceil(widget.getBoundingClientRect().height);
-    if (window.api && window.api.resizeContent) window.api.resizeContent(h);
+    const active = document.querySelector('.screen:not(.hidden)');
+    const isDash = !active || active.id === 'tab-dashboard';
+    // Medición con altura natural (sin el alto fijo de una pasada anterior).
+    if (active) active.classList.remove('tab-scroll');
+    const natural = Math.ceil(widget.getBoundingClientRect().height);
+    const report = (h) => { if (window.api && window.api.resizeContent) window.api.resizeContent(h); };
+    if (isDash || document.body.classList.contains('maximized')) {
+      if (isDash) dashHeight = natural;
+      report(natural);
+      return;
+    }
+    if (dashHeight > 0) {
+      // Alto disponible para la screen = alto del dashboard menos el chrome
+      // que la rodea (top fijo arriba y, si lo hubiera, borde inferior).
+      const wRect = widget.getBoundingClientRect();
+      const aRect = active.getBoundingClientRect();
+      const chrome = Math.ceil((aRect.top - wRect.top) + Math.max(0, wRect.bottom - aRect.bottom));
+      const avail = Math.max(120, dashHeight - chrome);
+      document.documentElement.style.setProperty('--tab-h', avail + 'px');
+      active.classList.add('tab-scroll');
+      report(dashHeight);
+    } else {
+      report(natural);
+    }
   });
 }
 
@@ -265,6 +292,46 @@ async function refreshSystem() {
 }
 
 // ── Weather ────────────────────────────────────────────────────
+// De noche los iconos con sol no tienen sentido: despejado → luna, con algo
+// de nube → luna con nube (compuesta con CSS, no hay emoji), sol con lluvia →
+// nube con lluvia. Nublado, tormenta, nieve y niebla son iguales día y noche.
+const NIGHT_EMOJI = { 0: '🌙', 51: '🌧', 53: '🌧', 61: '🌧', 80: '🌧' };
+const MOON_CLOUD = { 1: 'few', 2: 'some' };   // WMO 1: nube chica · 2: nube grande
+
+function weatherIconHtml(x, isDay) {
+  const code = x.code;
+  if (!isDay && MOON_CLOUD[code]) {
+    return `<span class="wx-moon-cloud ${MOON_CLOUD[code]}" title="${escapeHtml(x.label || '')}">` +
+      `<span class="wx-moon">🌙</span><span class="wx-cloud">☁</span></span>`;
+  }
+  if (!isDay && NIGHT_EMOJI[code]) return NIGHT_EMOJI[code];
+  return x.emoji || '•';
+}
+
+// Día/noche por la hora actual contra amanecer/atardecer del lugar (hoy y
+// mañana). Si el API no los trae (latitudes polares) cae en su is_day.
+function isDayNow(w) {
+  const t = Date.now();
+  const spans = [w.today, w.tomorrow].filter((d) => d && d.sunriseMs && d.sunsetMs);
+  if (!spans.length) return w.current?.isDay !== false;
+  return spans.some((d) => t >= d.sunriseMs && t < d.sunsetMs);
+}
+
+// Re-dibuja justo al cruzar el próximo amanecer/atardecer, así el icono cambia
+// a la hora exacta y no recién en el próximo refresco (cada 15 min).
+let dayNightTimer = null;
+function scheduleDayNightRender(w) {
+  clearTimeout(dayNightTimer);
+  const t = Date.now();
+  const next = [w.today, w.tomorrow]
+    .flatMap((d) => (d ? [d.sunriseMs, d.sunsetMs] : []))
+    .filter((ms) => ms && ms > t)
+    .sort((a, b) => a - b)[0];
+  if (!next) return;
+  dayNightTimer = setTimeout(() => { if (weatherData === w) renderWeather(w); },
+    Math.min(next - t + 1000, 0x7fffffff));
+}
+
 function renderWeather(w) {
   const grid = $('weather-grid');
   if (!w || w.error) {
@@ -276,10 +343,11 @@ function renderWeather(w) {
   const c = w.current || {};
   const today = w.today || {};
   const tom = w.tomorrow || {};
+  const isDay = isDayNow(w);
 
   grid.innerHTML = `
     <div class="weather-cell now">
-      <div class="weather-icon">${c.emoji || '•'}</div>
+      <div class="weather-icon">${weatherIconHtml(c, isDay)}</div>
       <div class="weather-info">
         <div class="weather-when">Ahora · ${escapeHtml(c.label || '')}</div>
         <div class="weather-temp">${fmtTemp(c.temp)}</div>
@@ -308,6 +376,7 @@ function renderWeather(w) {
       </div>
     </div>
   `;
+  scheduleDayNightRender(w);
   adjustWindowSize();
 }
 
@@ -389,6 +458,109 @@ function fmtChange(v) {
   return `<span class="mkt-chg ${up ? 'up' : 'down'}">${up ? '▲' : '▼'} ${Math.abs(v).toFixed(2)}%</span>`;
 }
 
+// ── Iconitos del card Mercado ──────────────────────────────────
+// Banderas y logos de cripto van como SVG inline: no dependen de la red y
+// evitan los emoji de bandera (Windows no los dibuja: muestra "US", "AR"…).
+// Los logos de acciones sí son remotos (Finnhub) con monograma de respaldo.
+const FLAG_SVG = {
+  USD: `<rect width="21" height="15" fill="#fff"/>
+    <g fill="#b22234"><rect width="21" height="1.16"/><rect y="2.31" width="21" height="1.16"/>
+    <rect y="4.62" width="21" height="1.16"/><rect y="6.92" width="21" height="1.16"/>
+    <rect y="9.23" width="21" height="1.16"/><rect y="11.54" width="21" height="1.16"/>
+    <rect y="13.85" width="21" height="1.16"/></g>
+    <rect width="8.6" height="8.08" fill="#3c3b6e"/>
+    <g fill="#fff"><circle cx="1.6" cy="1.6" r=".42"/><circle cx="3.4" cy="1.6" r=".42"/>
+    <circle cx="5.2" cy="1.6" r=".42"/><circle cx="7" cy="1.6" r=".42"/>
+    <circle cx="2.5" cy="4" r=".42"/><circle cx="4.3" cy="4" r=".42"/><circle cx="6.1" cy="4" r=".42"/>
+    <circle cx="1.6" cy="6.4" r=".42"/><circle cx="3.4" cy="6.4" r=".42"/>
+    <circle cx="5.2" cy="6.4" r=".42"/><circle cx="7" cy="6.4" r=".42"/></g>`,
+  ARS: `<rect width="21" height="15" fill="#fff"/>
+    <rect width="21" height="5" fill="#74acdf"/><rect y="10" width="21" height="5" fill="#74acdf"/>
+    <circle cx="10.5" cy="7.5" r="2.3" fill="#f6b40e" opacity=".45"/>
+    <circle cx="10.5" cy="7.5" r="1.5" fill="#f6b40e"/>`,
+  BRL: `<rect width="21" height="15" fill="#009b3a"/>
+    <path d="M10.5 1.6 19.3 7.5 10.5 13.4 1.7 7.5Z" fill="#fedf00"/>
+    <circle cx="10.5" cy="7.5" r="3.1" fill="#002776"/>
+    <path d="M7.5 7.4Q10.5 5.4 13.5 8Q10.5 6.6 7.5 8.1Z" fill="#fff"/>`,
+  EUR: `<rect width="21" height="15" fill="#039"/>
+    <g fill="#fc0"><circle cx="10.5" cy="3.2" r=".62"/><circle cx="12.65" cy="3.78" r=".62"/>
+    <circle cx="14.22" cy="5.35" r=".62"/><circle cx="14.8" cy="7.5" r=".62"/>
+    <circle cx="14.22" cy="9.65" r=".62"/><circle cx="12.65" cy="11.22" r=".62"/>
+    <circle cx="10.5" cy="11.8" r=".62"/><circle cx="8.35" cy="11.22" r=".62"/>
+    <circle cx="6.78" cy="9.65" r=".62"/><circle cx="6.2" cy="7.5" r=".62"/>
+    <circle cx="6.78" cy="5.35" r=".62"/><circle cx="8.35" cy="3.78" r=".62"/></g>`,
+  UYU: `<rect width="21" height="15" fill="#fff"/>
+    <g fill="#0038a8"><rect x="8.4" y="1.67" width="12.6" height="1.67"/>
+    <rect x="8.4" y="5" width="12.6" height="1.67"/>
+    <rect y="8.33" width="21" height="1.67"/><rect y="11.67" width="21" height="1.67"/></g>
+    <circle cx="4.2" cy="3.3" r="2.1" fill="#f6b40e" opacity=".4"/>
+    <circle cx="4.2" cy="3.3" r="1.4" fill="#f6b40e"/>`,
+};
+
+function flagIcon(code) {
+  const body = FLAG_SVG[code];
+  if (!body) return '';
+  return `<svg class="mkt-flag" viewBox="0 0 21 15" aria-hidden="true">${body}</svg>`;
+}
+
+// Marcas dibujadas a mano (el set de monedas es fijo): círculo con el color
+// de la moneda + el glifo (₿, Ł, la M de Monero, la X de Ripple).
+const COIN_SVG = {
+  BTC: `<circle cx="8" cy="8" r="8" fill="#f7931a"/>
+    <g fill="none" stroke="#fff" stroke-width="1.55" stroke-linecap="round">
+      <path d="M5.9 4.5v7"/><path d="M5.5 4.5h3.2a1.65 1.65 0 0 1 0 3.3H5.5"/>
+      <path d="M5.5 7.8h3.7a1.75 1.75 0 0 1 0 3.5H5.5"/>
+      <path d="M6 2.5v11"/><path d="M8.4 2.5v11"/></g>`,
+  LTC: `<circle cx="8" cy="8" r="8" fill="#345d9d"/>
+    <g fill="none" stroke="#fff" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M9.5 3.2 7.4 10.3h4.9"/><path d="M4.6 8.6 9.9 6.9"/></g>`,
+  XMR: `<circle cx="8" cy="8" r="8" fill="#f60"/>
+    <path d="M3.2 12.2V4L8 9 12.8 4v8.2" fill="none" stroke="#fff" stroke-width="1.9"
+      stroke-linecap="round" stroke-linejoin="round"/>`,
+  XRP: `<circle cx="8" cy="8" r="8" fill="#23292f"/>
+    <g fill="none" stroke="#fff" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M4 3.8 8 7.7l4-3.9"/><path d="M4 12.2 8 8.3l4 3.9"/></g>`,
+};
+
+// Color estable por símbolo para los monogramas de respaldo.
+function symbolHue(sym) {
+  let h = 0;
+  for (let i = 0; i < sym.length; i++) h = (h * 31 + sym.charCodeAt(i)) % 360;
+  return h;
+}
+
+function monogramIcon(sym, cls) {
+  const s = String(sym || '?').replace(/[^A-Za-z0-9]/g, '').slice(0, 2).toUpperCase() || '?';
+  const hue = symbolHue(String(sym || ''));
+  return `<span class="${cls} mkt-ico-fb" style="background:hsl(${hue} 55% 32%); color:hsl(${hue} 90% 82%)">${escapeHtml(s)}</span>`;
+}
+
+function coinIcon(symbol) {
+  const body = COIN_SVG[symbol];
+  if (!body) return monogramIcon(symbol, 'mkt-ico');
+  return `<svg class="mkt-ico" viewBox="0 0 16 16" aria-hidden="true">${body}</svg>`;
+}
+
+function stockIcon(q) {
+  if (q && q.logo) {
+    return `<img class="mkt-ico stk-logo" src="${escapeHtml(q.logo)}" alt="" loading="lazy"
+      data-sym="${escapeHtml(q.symbol)}">`;
+  }
+  return monogramIcon(q && q.symbol, 'mkt-ico');
+}
+
+// Si el logo remoto no carga (símbolo sin perfil, red caída), se reemplaza por
+// el monograma en vez de dejar el hueco del ícono roto.
+function wireLogoFallbacks(root) {
+  root.querySelectorAll('img.stk-logo').forEach((img) => {
+    img.addEventListener('error', () => {
+      const tmp = document.createElement('div');
+      tmp.innerHTML = monogramIcon(img.dataset.sym, 'mkt-ico');
+      if (tmp.firstElementChild) img.replaceWith(tmp.firstElementChild);
+    }, { once: true });
+  });
+}
+
 function renderMarkets(m) {
   const el = $('mkt-content');
   if (!el) return;
@@ -403,6 +575,7 @@ function renderMarkets(m) {
   if (Array.isArray(m.crypto) && m.crypto.length) {
     cryptoHtml = m.crypto.map((c) => `
       <div class="mkt-coin">
+        ${coinIcon(c.symbol)}
         <span class="mkt-coin-sym">${escapeHtml(c.symbol)}</span>
         <span class="mkt-coin-name">${escapeHtml(c.name)}</span>
         <span class="mkt-coin-price">${fmtCryptoUsd(c.usd)}</span>
@@ -424,7 +597,7 @@ function renderMarkets(m) {
     const erVal = er && er[code] != null ? er[code] : null;
     return `
       <div class="mkt-fx-row">
-        <span class="mkt-fx-cur"><b>${escapeHtml(code)}</b> ${escapeHtml(name)}</span>
+        <span class="mkt-fx-cur">${flagIcon(code)}<span class="mkt-fx-cur-txt"><b>${escapeHtml(code)}</b> ${escapeHtml(name)}</span></span>
         <span class="mkt-fx-cell">${daCell}</span>
         <span class="mkt-fx-cell"><span class="mkt-fx-val">${fmtUyuRate(erVal)}</span></span>
       </div>`;
@@ -437,7 +610,7 @@ function renderMarkets(m) {
       <div class="mkt-list">${cryptoHtml}</div>
     </div>
     <div class="mkt-col mkt-col-sep">
-      <div class="mkt-sub-title">Divisas <span class="mkt-src">· UYU</span></div>
+      <div class="mkt-sub-title">Divisas <span class="mkt-src">· UYU</span>${flagIcon('UYU')}</div>
       <div class="mkt-fx-row mkt-fx-head">
         <span class="mkt-fx-cur"></span>
         <span class="mkt-fx-cell">DolarAPI</span>
@@ -538,12 +711,14 @@ function renderStocks(r) {
       <div class="mkt-list">
         ${quotes.map((q) => `
           <div class="mkt-coin">
-            <span class="mkt-coin-sym">${escapeHtml(q.symbol)}</span>
+            ${stockIcon(q)}
+            <span class="mkt-coin-sym" title="${escapeHtml(q.name || q.symbol)}">${escapeHtml(q.symbol)}</span>
             <span class="mkt-coin-price">${fmtStockPrice(q.price)}</span>
             ${q.price != null ? fmtChange(q.changePct) : '<span class="mkt-chg">—</span>'}
           </div>`).join('')}
       </div>
     </div>`;
+  wireLogoFallbacks(el);
   const editBtn = el.querySelector('.js-stocks-edit');
   if (editBtn) editBtn.addEventListener('click', () => {
     stocksEditing = !stocksEditing;
@@ -619,6 +794,10 @@ let ezDashShows = [];      // últimas series agrupadas para la mitad derecha de
 const YIFY_PAGE_SIZES = { grid: 12, icons: 40, list: 20 };
 function yifyPageSize() { return YIFY_PAGE_SIZES[yifyView] || 12; }
 let yifyOk = null;        // null = verificando; resultado del health check
+// Los listados salen del archivo histórico (yify.sqlite), así que la muerte
+// del mirror ya no vacía el tab: `stale` marca que lo que se ve es lo
+// archivado y que la API no contestó.
+let yifyStale = false;
 let yifyLatest = null;    // último listado "recientes" (alimenta el dashboard)
 let yifyShown = [];       // películas renderizadas en el tab (para los clicks)
 let yifyPage = 1;         // página actual del listado del tab
@@ -662,6 +841,13 @@ function yifyFavHtml(m, i, mini = false) {
     title="${on ? 'Quitar de favoritos' : 'Guardar en favoritos'}">${on ? '♥' : '♡'}</button>`;
 }
 
+// Chip de origen (YIFY / LIME) en la sección Favoritos: distingue de qué API
+// salió cada favorito. `inline` es la variante para la vista lista y la ficha.
+function favSrcHtml(m, inline = false) {
+  if (!yifyFavsMode || !m.source) return '';
+  return `<span class="fav-src fav-src-${m.source}${inline ? ' fav-src-inline' : ''}">${m.source === 'lime' ? 'LIME' : 'YIFY'}</span>`;
+}
+
 // Alta/baja del favorito y refresco de la vista actual para repintar los
 // corazones. El alta es lenta (main baja la portada y la ficha completa para
 // guardarlas en la base): el botón queda deshabilitado mientras tanto.
@@ -677,37 +863,77 @@ async function toggleYifyFav(m) {
     }
   } catch {}
   if (yifyFavsMode) loadYifyFavs();
+  else if (m.source === 'lime') { if (limeShown.length) renderLimeCards(limeShown); }
   else if (yifyShown.length) renderYifyMovies(yifyShown);
 }
 
-// El card de "Últimos estrenos" se muestra si hay pelis O series; cada mitad
-// se renderiza por separado (APIs distintas, refrescos independientes).
+// El card de "Últimos estrenos" se muestra si hay pelis O series — o si una
+// fuente de películas está caída (los chips de estado tienen que verse);
+// cada mitad se renderiza por separado (APIs distintas, refrescos
+// independientes).
 function updateDashMediaCard() {
   const card = $('yify-dash-card');
   if (!card) return;
-  const hasMovies = yifyOk && yifyLatest && Array.isArray(yifyLatest.movies) && yifyLatest.movies.length;
+  const hasMovies = (yifyOk && yifyLatest && Array.isArray(yifyLatest.movies) && yifyLatest.movies.length)
+    || (limeOk && limeLatest && Array.isArray(limeLatest.movies) && limeLatest.movies.length);
   const hasSeries = ezDashShows.length;
-  card.hidden = !(hasMovies || hasSeries);
+  const someDown = yifyOk === false || limeOk === false;
+  card.hidden = !(hasMovies || hasSeries || someDown);
 }
 
+// Chips de estado de las dos fuentes de películas (YIFY / LimeTorrents) en el
+// card del dashboard: verde en línea, rojo caída, amarillo verificando.
+function updateDashApiChips() {
+  const chips = [
+    { el: $('dash-yify-chip'), ok: yifyOk === null ? null : (yifyOk && !yifyStale), name: 'YIFY' },
+    { el: $('dash-lime-chip'), ok: limeOk, name: 'LimeTorrents' },
+  ];
+  for (const { el, ok, name } of chips) {
+    if (!el) continue;
+    const kind = ok === null ? 'checking' : ok ? 'connected' : 'disconnected';
+    el.className = `db-status dash-api-chip ${kind}`;
+    el.title = `${name}: ${ok === null ? 'verificando…' : ok ? 'en línea' : 'caída'}`;
+  }
+}
+
+// Mitad izquierda: últimas películas mezclando las dos fuentes del tab Films —
+// 2 de YIFY + 2 de LimeTorrents. Si una fuente está caída (o trae menos de 2),
+// la otra completa la fila de 4. Click → ficha según la fuente.
+let dashMovies = [];   // { src: 'yify'|'lime', m } de las celdas renderizadas
 function renderYifyDash() {
+  updateDashApiChips();   // toda transición de yifyOk/limeOk pasa por acá
   const grid = $('yify-dash');
   if (!grid) return;
-  const movies = (yifyOk && yifyLatest && Array.isArray(yifyLatest.movies)) ? yifyLatest.movies : [];
+  const yify = (yifyOk && yifyLatest && Array.isArray(yifyLatest.movies)) ? yifyLatest.movies : [];
+  const lime = (limeOk && limeLatest && Array.isArray(limeLatest.movies)) ? limeLatest.movies : [];
+  const half = Math.floor(YIFY_DASH_COUNT / 2);
+  const yifyTake = yify.slice(0, YIFY_DASH_COUNT - Math.min(half, lime.length));
+  const limeTake = lime.slice(0, YIFY_DASH_COUNT - yifyTake.length);
+  dashMovies = [
+    ...yifyTake.map((m) => ({ src: 'yify', m })),
+    ...limeTake.map((m) => ({ src: 'lime', m })),
+  ];
   const whenEl = $('yify-dash-when');
-  if (whenEl && yifyLatest && yifyLatest.fetchedAt) whenEl.textContent = fmtWhen(yifyLatest.fetchedAt);
-  grid.innerHTML = movies.length
-    ? movies.slice(0, YIFY_DASH_COUNT).map((m) => `
-      <div class="yify-dash-cell" data-id="${m.id}" title="${escapeHtml(m.title)}${m.year ? ` (${m.year})` : ''} — ver ficha">
+  const ts = Math.max((yifyLatest && yifyLatest.fetchedAt) || 0, (limeLatest && limeLatest.fetchedAt) || 0);
+  if (whenEl && ts) whenEl.textContent = fmtWhen(ts);
+  grid.innerHTML = dashMovies.length
+    ? dashMovies.map(({ src, m }, i) => `
+      <div class="yify-dash-cell" data-i="${i}" title="${escapeHtml(m.title)}${m.year ? ` (${m.year})` : ''} — ver ficha">
         ${m.cover
           ? `<img class="yify-poster" src="${escapeHtml(m.cover)}" loading="lazy" alt="">`
           : `<div class="yify-poster yify-noposter">🎬</div>`}
+        <span class="fav-src fav-src-${src}">${src === 'lime' ? 'LIME' : 'YIFY'}</span>
         <div class="yify-dash-title">${escapeHtml(m.title)}</div>
-        <div class="yify-dash-meta">${escapeHtml(yifyMeta(m))}</div>
+        <div class="yify-dash-meta">${escapeHtml(src === 'lime' ? limeMeta(m) : yifyMeta(m))}</div>
       </div>`).join('')
-    : `<div class="dash-media-empty">${yifyOk ? 'Sin novedades' : 'API caída'}</div>`;
+    : `<div class="dash-media-empty">${(yifyOk || limeOk) ? 'Sin novedades' : 'APIs caídas'}</div>`;
   grid.querySelectorAll('.yify-dash-cell').forEach((c) => {
-    c.addEventListener('click', () => openYifyModal(+c.dataset.id));
+    c.addEventListener('click', () => {
+      const d = dashMovies[+c.dataset.i];
+      if (!d) return;
+      if (d.src === 'lime') openFavModal(d.m);
+      else openYifyModal(d.m.id);
+    });
   });
   updateDashMediaCard();
   adjustWindowSize();
@@ -806,6 +1032,7 @@ function renderYifyCards(el) {
           : `<div class="yify-poster yify-noposter">🎬</div>`}
         ${m.rating ? `<span class="yify-rating">★ ${m.rating}</span>` : ''}
         ${yifyFavHtml(m, i)}
+        ${favSrcHtml(m)}
       </div>
       <div class="yify-info">
         <div class="yify-title js-yify-open" data-i="${i}" title="${escapeHtml(m.title)}">${escapeHtml(m.title)}</div>
@@ -832,6 +1059,7 @@ function renderYifyIcons(el) {
         ? `<img class="yify-poster" src="${escapeHtml(m.cover)}" loading="lazy" alt="">`
         : `<div class="yify-poster yify-noposter">🎬</div>`}
       ${yifyFavHtml(m, i)}
+      ${favSrcHtml(m)}
       <div class="yify-dash-title">${escapeHtml(m.title)}</div>
       <div class="yify-dash-meta">${escapeHtml(yifyMeta(m))}</div>
     </div>`).join('');
@@ -847,7 +1075,7 @@ function renderYifyTable(el) {
     ts.forEach((t, ti) => {
       rows.push(`
         <div class="yify-tr">
-          <span class="yify-td-title js-yify-open" data-i="${i}" title="${escapeHtml(m.title)} — ver ficha">${ti === 0 ? yifyFavHtml(m, i, true) : ''}${escapeHtml(m.title)}</span>
+          <span class="yify-td-title js-yify-open" data-i="${i}" title="${escapeHtml(m.title)} — ver ficha">${ti === 0 ? yifyFavHtml(m, i, true) + favSrcHtml(m, true) : ''}${escapeHtml(m.title)}</span>
           <span class="yify-td-num">${m.year ?? '—'}</span>
           <span class="yify-td-num yify-td-rating">${m.rating ? '★ ' + m.rating : '—'}</span>
           <span class="yify-td-qual">${t ? escapeHtml(t.quality + (t.type ? ' · ' + t.type : '')) : '—'}</span>
@@ -910,7 +1138,9 @@ async function refreshYifyLatest() {
     const r = await window.api.yify.list({ limit: yifyPageSize(), sort: 'date_added' });
     if (r && !r.error) {
       yifyOk = true;
-      setYifyStatus('connected', 'API conectada');
+      yifyStale = !!r.stale;
+      setYifyStatus(yifyStale ? 'disconnected' : 'connected',
+        yifyStale ? 'API caída — listando el archivo' : 'API conectada');
       yifyLatest = r;
       renderYifyDash();
       // Solo pisar el listado del tab si no hay búsqueda, filtros ni página
@@ -971,6 +1201,10 @@ async function loadYifyList() {
       minRating: parseInt(val('yify-minrating', '0'), 10) || 0,
     });
     if (r && !r.error) {
+      yifyStale = !!r.stale;
+      setYifyStatus(yifyStale ? 'disconnected' : 'connected',
+        yifyStale ? 'API caída — listando el archivo' : 'API conectada');
+      updateDashApiChips();
       renderYifyMovies(r.movies);
       renderYifyPager(r.count);
     } else {
@@ -981,7 +1215,14 @@ async function loadYifyList() {
   }
 }
 
-function yifySearchNew() { yifyPage = 1; loadYifyList(); }
+function yifySearchNew() {
+  yifyPage = 1;
+  loadYifyList();
+  // El mismo buscador le pega a la otra fuente del tab (LimeTorrents); los
+  // cambios de filtros de YIFY (género/orden/…) no la re-disparan.
+  const q = ($('yify-search') ? $('yify-search').value : '').trim();
+  if (q !== limeQuery) limeSearchMovies(q);
+}
 
 // ── Sección Favoritos ─────────────────────────────────────────
 // Lee la base local y reusa las mismas vistas (grid/iconos/lista). No depende
@@ -1328,6 +1569,11 @@ function setYifyFavsMode(on) {
   });
   const filters = document.querySelector('#tab-torrents .yify-filters');
   if (filters) filters.style.display = yifyFavsMode ? 'none' : '';
+  // La barra manda sobre todo el tab: en Favoritos la sección de "Últimos
+  // Films" (subidas recientes de Lime) sobra — los favoritos de Lime ya salen
+  // en la grilla de arriba, con su chip LIME.
+  const limeCard = $('lime-list') && $('lime-list').closest('section');
+  if (limeCard) limeCard.style.display = yifyFavsMode ? 'none' : '';
   if (yifyFavsMode) {
     loadYifyFavs();
   } else {
@@ -1393,7 +1639,9 @@ async function openYifyModal(movieId) {
   fillYifyModal(box, det, sugMovies);
 }
 
-// Ficha 100% offline para favoritos: datos, magnets y portada desde SQLite.
+// Ficha armada con un objeto ya cargado (sin pegarle a la API de YIFY):
+// favoritos desde SQLite, y también las películas de LimeTorrents (el feed
+// ya trae los magnets; no hay endpoint de detalles que consultar).
 function openFavModal(m) {
   closeYifyModal();
   const overlay = document.createElement('div');
@@ -1406,7 +1654,18 @@ function openFavModal(m) {
   fillYifyModal(overlay.querySelector('.yify-modal-box'), m, []);
 }
 
-// Cuerpo + wiring de la ficha, compartido entre la versión API y la offline.
+// Links externos de la ficha según la fuente: YIFY → YTS; Lime → IMDb +
+// página del torrent. Un favorito de Lime solo persiste `url` (IMDb o Lime).
+function movieLinkButtons(m) {
+  const btn = (label, url) => `<button class="fin-btn js-yify-link" data-url="${escapeHtml(url)}">${label}</button>`;
+  if (m.source !== 'lime') return m.url ? btn('Ver en YTS ↗', m.url) : '';
+  const imdb = m.imdbUrl || (/imdb\.com/i.test(m.url || '') ? m.url : null);
+  const page = m.page || (m.url && !/imdb\.com/i.test(m.url) ? m.url : null);
+  return (imdb ? btn('Ver en IMDb ↗', imdb) : '') + (page ? btn('LimeTorrents ↗', page) : '');
+}
+
+// Cuerpo + wiring de la ficha, compartido entre la versión API (YIFY), las
+// películas de LimeTorrents y la versión offline (favoritos de ambas fuentes).
 function fillYifyModal(box, m, sugMovies) {
   box.innerHTML = `
     <div class="fin-exp-modal-head">
@@ -1418,13 +1677,13 @@ function fillYifyModal(box, m, sugMovies) {
         ? `<img class="yify-poster yify-modal-poster" src="${escapeHtml(m.cover)}" alt="">`
         : `<div class="yify-poster yify-modal-poster yify-noposter">🎬</div>`}
       <div class="yify-modal-info">
-        <div class="yify-meta">${escapeHtml(yifyMeta(m))}</div>
+        <div class="yify-meta">${escapeHtml(yifyMeta(m))}${m.source ? ` <span class="fav-src fav-src-${m.source} fav-src-inline">${m.source === 'lime' ? 'LIME' : 'YIFY'}</span>` : ''}</div>
         ${m.genres && m.genres.length ? `<div class="yify-genres">${escapeHtml(m.genres.join(' · '))}</div>` : ''}
         <div class="yify-modal-actions-row">
           ${bestStreamTorrent(m) ? `<button class="fin-btn yify-watch-action js-yify-watch">▶ Ver online</button>` : ''}
           <button class="fin-btn yify-fav-action js-yify-modal-fav${favIds.has(m.id) ? ' faved' : ''}">${favIds.has(m.id) ? '♥ En favoritos' : '♡ Guardar en favoritos'}</button>
           ${m.trailer ? `<button class="fin-btn js-yify-link" data-url="${escapeHtml(m.trailer)}">▶ Trailer</button>` : ''}
-          ${m.url ? `<button class="fin-btn js-yify-link" data-url="${escapeHtml(m.url)}">Ver en YTS ↗</button>` : ''}
+          ${movieLinkButtons(m)}
         </div>
         <div class="yify-quals">
           ${(m.torrents || []).map((t, ti) => `
@@ -1759,13 +2018,17 @@ async function initYify() {
     yifyTimerStarted = true;
     setInterval(() => { if (yifyOk) refreshYifyLatest(); }, YIFY_INTERVAL_MS);
   }
+  // Aunque el probe falle se intenta listar: el tab sale del archivo
+  // histórico y solo cae en "API caída" si la base todavía está vacía
+  // (refreshYifyLatest llama a markYifyDown cuando no hay ni una cosa ni la
+  // otra).
   if (st && st.ok) {
     yifyOk = true;
     setYifyStatus('connected', 'API conectada');
-    refreshYifyLatest();
   } else {
-    markYifyDown(st && st.error);
+    setYifyStatus('disconnected', 'API caída — listando el archivo');
   }
+  refreshYifyLatest();
 }
 
 const yifySearchBtn = $('yify-search-btn');
@@ -1780,8 +2043,9 @@ if (yifySearchInput) {
   const sel = $(id);
   if (sel) sel.addEventListener('change', yifySearchNew);
 });
-// Toggle de vista (tarjetas / iconos / lista): re-renderiza lo ya cargado
-// sin volver a pegarle a la API. La elección persiste en localStorage.
+// Toggle de vista (tarjetas / iconos / lista) del TAB Films: re-renderiza lo
+// ya cargado en LAS DOS fuentes (YIFY y LimeTorrents) sin volver a pegarle a
+// la API. La elección persiste en localStorage.
 function setYifyView(view) {
   if (view === yifyView) return;
   const oldSize = yifyPageSize();
@@ -1790,9 +2054,16 @@ function setYifyView(view) {
   document.querySelectorAll('#yify-view-toggle .yify-view-btn').forEach((b) => {
     b.classList.toggle('active', b.dataset.view === view);
   });
+  const newSize = yifyPageSize();
+  // Lime pagina local: rehacer la página con el tamaño nuevo alcanza.
+  if (limeAll.length) {
+    limePage = Math.floor(((limePage - 1) * oldSize) / newSize) + 1;
+    renderLimePage();
+  } else if (limeShown.length) {
+    renderLimeCards(limeShown);
+  }
   // Favoritos no pagina: alcanza con re-renderizar lo ya cargado.
   if (yifyFavsMode) { if (yifyShown.length) renderYifyMovies(yifyShown); return; }
-  const newSize = yifyPageSize();
   if (newSize === oldSize) {
     if (yifyShown.length) renderYifyMovies(yifyShown);
     return;
@@ -1815,7 +2086,7 @@ if (yifyRefreshBtn) yifyRefreshBtn.addEventListener('click', () => {
   else initYify();
 });
 const yifyDashRefreshBtn = $('yify-dash-refresh');
-if (yifyDashRefreshBtn) yifyDashRefreshBtn.addEventListener('click', () => { refreshYifyLatest(); refreshEztvDash(); });
+if (yifyDashRefreshBtn) yifyDashRefreshBtn.addEventListener('click', () => { refreshYifyLatest(); refreshLime(); refreshEztvDash(); });
 const yifyFavsBtn = $('yify-favs-btn');
 if (yifyFavsBtn) yifyFavsBtn.addEventListener('click', () => setYifyFavsMode(!yifyFavsMode));
 // Ids de favoritos al arrancar, para pintar los ♥ sobre lo ya renderizado.
@@ -1824,6 +2095,688 @@ window.api.favs.ids().then((ids) => {
   if (!yifyFavsMode && yifyShown.length) renderYifyMovies(yifyShown);
 }).catch(() => {});
 
+// ── LimeTorrents RSS (tab Torrents Films) ──────────────────────
+// Segunda fuente del tab Films: el feed RSS de limetorrents.fun (categoría
+// Movies). No hay búsqueda — main agrupa los releases del feed por película
+// y los enriquece con el poster de IMDb, así las cards se ven como las de
+// YIFY (poster + badges de calidad con magnet). El click en el poster abre
+// la ficha de IMDb (o la página del torrent si no hubo match). Mismo patrón
+// defensivo que YIFY/EZTV: initLime() corre el health check y si el feed se
+// cae la grilla degrada a "RSS caído" con Reintentar.
+const LIME_COUNT = 50;      // releases del feed (se apilan por película)
+// El RSS no pagina (probado /rss/16/2/, ?p=2 y date/2/ — siempre devuelve la
+// misma primera página), así que la paginación es local sobre lo agrupado.
+// El tamaño de página sale de la vista del tab (la misma que YIFY): tarjetas
+// 12, iconos 40, lista 20.
+let limeOk = null;        // null = verificando; resultado del health check
+let limeLatest = null;    // último listado (alimenta el dashboard, 2 celdas)
+let limeAll = [];         // todas las películas agrupadas del feed
+let limePage = 1;         // página local actual
+let limeShown = [];       // películas renderizadas (para los clicks)
+let limeFetching = false;
+let limeTimerStarted = false;
+
+function setLimeStatus(kind, text) {
+  const wrap = $('lime-status'), txt = $('lime-status-text');
+  if (!wrap) return;
+  wrap.className = `db-status ${kind}`;
+  if (txt) txt.textContent = text;
+}
+
+function renderLimeDown(err) {
+  const el = $('lime-list');
+  if (!el) return;
+  el.className = 'yify-grid';
+  el.innerHTML = `
+    <div class="yify-down">
+      <div class="yify-down-msg">⚠️ El RSS de LimeTorrents no responde${err ? ` <span class="yify-down-err">(${escapeHtml(err)})</span>` : ''}</div>
+      <button id="lime-retry" class="fin-btn">Reintentar</button>
+    </div>`;
+  const btn = $('lime-retry');
+  if (btn) btn.addEventListener('click', initLime);
+}
+
+function markLimeDown(err) {
+  limeOk = false;
+  limeLatest = null;
+  limeAll = [];
+  limePage = 1;
+  limeShown = [];
+  const pager = $('lime-pager');
+  if (pager) pager.innerHTML = '';
+  setLimeStatus('disconnected', 'RSS caído');
+  renderLimeDown(err);
+  renderYifyDash();   // el dashboard rellena sus celdas con YIFY
+}
+
+function limeMeta(m) {
+  const bits = [];
+  if (m.year) bits.push(String(m.year));
+  if (m.latestAt) bits.push(ezDate(m.latestAt));
+  const seeds = Math.max(0, ...m.torrents.map((t) => t.seeds || 0));
+  if (seeds > 0) bits.push(`▲ ${seeds}`);
+  return bits.join(' · ');
+}
+
+function limeFavHtml(m, i, mini = false) {
+  const on = favIds.has(m.id);
+  return `<button class="yify-fav-btn${mini ? ' yify-fav-mini' : ''}${on ? ' faved' : ''} js-lime-fav" data-i="${i}"
+    title="${on ? 'Quitar de favoritos' : 'Guardar en favoritos'}">${on ? '♥' : '♡'}</button>`;
+}
+
+// Clicks compartidos por las tres vistas: ficha (js-lime-open), magnet y ♥.
+function attachLimeClickHandlers(el) {
+  el.querySelectorAll('.js-lime-open').forEach((n) => {
+    n.addEventListener('click', () => {
+      const m = limeShown[+n.dataset.i];
+      if (m) openFavModal(m);   // ficha con lo que trae el feed (magnets incluidos)
+    });
+  });
+  el.querySelectorAll('.js-lime-magnet').forEach((b) => {
+    b.addEventListener('click', (e) => {
+      e.stopPropagation();   // en la vista lista el padre abre la ficha
+      const m = limeShown[+b.dataset.i];
+      const t = m && m.torrents ? m.torrents[+b.dataset.t] : null;
+      if (t && t.magnet) window.api.openExternal(t.magnet);
+    });
+  });
+  el.querySelectorAll('.js-lime-fav').forEach((b) => {
+    b.addEventListener('click', async (e) => {
+      e.stopPropagation();   // el padre abre la ficha
+      const m = limeShown[+b.dataset.i];
+      if (!m || b.disabled) return;
+      b.disabled = true;
+      b.textContent = '…';
+      await toggleYifyFav(m);   // re-renderiza la grilla (el botón se descarta)
+    });
+  });
+}
+
+// Vista "grid": cards como las de YIFY (mismas clases): poster de IMDb, ♥
+// para guardar en favoritos y badges de calidad con el magnet de cada release.
+function renderLimeGrid(el) {
+  el.className = 'yify-grid';
+  el.innerHTML = limeShown.map((m, i) => `
+    <div class="yify-movie">
+      <div class="yify-poster-wrap js-lime-open" data-i="${i}" title="Ver ficha">
+        ${m.cover
+          ? `<img class="yify-poster" src="${escapeHtml(m.cover)}" loading="lazy" alt="">`
+          : `<div class="yify-poster yify-noposter">🎬</div>`}
+        ${limeFavHtml(m, i)}
+      </div>
+      <div class="yify-info">
+        <div class="yify-title js-lime-open" data-i="${i}" title="${escapeHtml(m.title)}">${escapeHtml(m.title)}</div>
+        <div class="yify-meta">${escapeHtml(limeMeta(m))}</div>
+        <div class="yify-quals">
+          ${(m.torrents || []).map((t, ti) => `
+            <button class="yify-q js-lime-magnet" data-i="${i}" data-t="${ti}"
+              title="Magnet${t.quality ? ` ${escapeHtml(t.quality)}` : ''}${t.size ? ` · ${escapeHtml(t.size)}` : ''}${t.seeds != null ? ` · ${t.seeds} seeds` : ''}">
+              🧲 ${escapeHtml(t.quality || '?')}
+            </button>`).join('')}
+        </div>
+      </div>
+    </div>`).join('');
+}
+
+// Vista "icons": grilla densa de posters chicos (igual que la de YIFY).
+function renderLimeIcons(el) {
+  el.className = 'yify-icons-grid';
+  el.innerHTML = limeShown.map((m, i) => `
+    <div class="yify-dash-cell js-lime-open" data-i="${i}"
+      title="${escapeHtml(m.title)}${m.year ? ` (${m.year})` : ''} — ver ficha">
+      ${m.cover
+        ? `<img class="yify-poster" src="${escapeHtml(m.cover)}" loading="lazy" alt="">`
+        : `<div class="yify-poster yify-noposter">🎬</div>`}
+      ${limeFavHtml(m, i)}
+      <div class="yify-dash-title">${escapeHtml(m.title)}</div>
+      <div class="yify-dash-meta">${escapeHtml(limeMeta(m))}</div>
+    </div>`).join('');
+}
+
+// Vista "list": una fila por release, con las mismas columnas que la de YIFY
+// (el RSS no trae rating: esa columna va en —).
+function renderLimeTable(el) {
+  el.className = 'yify-table';
+  const rows = [];
+  limeShown.forEach((m, i) => {
+    const ts = (m.torrents && m.torrents.length) ? m.torrents : [null];
+    ts.forEach((t, ti) => {
+      rows.push(`
+        <div class="yify-tr">
+          <span class="yify-td-title js-lime-open" data-i="${i}" title="${escapeHtml(t ? t.title : m.title)} — ver ficha">${ti === 0 ? limeFavHtml(m, i, true) : ''}${escapeHtml(m.title)}</span>
+          <span class="yify-td-num">${m.year ?? '—'}</span>
+          <span class="yify-td-num yify-td-rating">—</span>
+          <span class="yify-td-qual">${t && t.quality ? escapeHtml(t.quality) : '—'}</span>
+          <span class="yify-td-num">${t && t.size ? escapeHtml(t.size) : '—'}</span>
+          <span class="yify-td-num yify-td-seeds">${t && t.seeds != null ? t.seeds : '—'}</span>
+          <span class="yify-td-num yify-td-peers">${t && t.peers != null ? t.peers : '—'}</span>
+          <span class="yify-td-mag">${t && t.magnet ? `
+            <button class="yify-q yify-q-mini js-lime-magnet" data-i="${i}" data-t="${ti}"
+              title="Magnet${t.quality ? ` ${escapeHtml(t.quality)}` : ''}${t.size ? ` · ${escapeHtml(t.size)}` : ''}">🧲</button>` : ''}</span>
+        </div>`);
+    });
+  });
+  el.innerHTML = `
+    <div class="yify-tr yify-tr-head">
+      <span>Película</span>
+      <span class="yify-td-num">Año</span>
+      <span class="yify-td-num">★</span>
+      <span>Calidad</span>
+      <span class="yify-td-num">Tamaño</span>
+      <span class="yify-td-num" title="Seeders">Seeds</span>
+      <span class="yify-td-num" title="Leechers">Leech</span>
+      <span></span>
+    </div>` + rows.join('');
+}
+
+// Dispatcher de la grilla: usa la MISMA vista que YIFY — el toggle vive en la
+// barra del tab y manda sobre las dos fuentes. El click abre la ficha (mismo
+// modal que YIFY, sin sinopsis/cast — el RSS no los trae).
+function renderLimeCards(movies) {
+  const el = $('lime-list');
+  if (!el) return;
+  limeShown = Array.isArray(movies) ? movies : [];
+  if (!limeShown.length) {
+    el.className = 'yify-grid';
+    el.innerHTML = `<div class="ai-loading">${limeQuery
+      ? `Sin resultados en LimeTorrents para “${escapeHtml(limeQuery)}”`
+      : 'Sin subidas recientes'}</div>`;
+    return;
+  }
+  if (yifyView === 'icons') renderLimeIcons(el);
+  else if (yifyView === 'list') renderLimeTable(el);
+  else renderLimeGrid(el);
+  attachLimeClickHandlers(el);
+}
+
+// Pager local "‹ Página X de Y ›" (mismo look que el de YIFY).
+function renderLimePager() {
+  const el = $('lime-pager');
+  if (!el) return;
+  const total = limeAll.length;
+  const totalPages = Math.max(1, Math.ceil(total / yifyPageSize()));
+  if (totalPages <= 1) { el.innerHTML = ''; return; }
+  if (limePage > totalPages) limePage = totalPages;
+  el.innerHTML = `
+    <button class="fin-month-nav-btn js-lime-prev" title="Página anterior" ${limePage <= 1 ? 'disabled' : ''}>‹</button>
+    <span class="yify-pager-info">Página ${limePage.toLocaleString('es-UY')} de ${totalPages.toLocaleString('es-UY')} · ${total.toLocaleString('es-UY')} películas</span>
+    <button class="fin-month-nav-btn js-lime-next" title="Página siguiente" ${limePage >= totalPages ? 'disabled' : ''}>›</button>`;
+  el.querySelector('.js-lime-prev').addEventListener('click', () => {
+    if (limePage > 1) { limePage--; renderLimePage(); }
+  });
+  el.querySelector('.js-lime-next').addEventListener('click', () => {
+    if (limePage < totalPages) { limePage++; renderLimePage(); }
+  });
+}
+
+// Página actual de la grilla + pager. Se llama al cargar y al navegar.
+function renderLimePage() {
+  const size = yifyPageSize();
+  const totalPages = Math.max(1, Math.ceil(limeAll.length / size));
+  if (limePage > totalPages) limePage = totalPages;
+  const start = (limePage - 1) * size;
+  renderLimeCards(limeAll.slice(start, start + size));
+  renderLimePager();
+  adjustWindowSize();
+}
+
+async function refreshLime() {
+  if (limeFetching) return;
+  limeFetching = true;
+  const btn = $('lime-refresh');
+  if (btn) btn.disabled = true;
+  try {
+    const r = await window.api.lime.list({ limit: LIME_COUNT });
+    if (r && !r.error && Array.isArray(r.movies)) {
+      limeOk = true;
+      setLimeStatus('connected', 'RSS conectado');
+      limeLatest = r;
+      // Una búsqueda activa no se pisa con los recientes (el refresco
+      // periódico igual alimenta el dashboard).
+      if (!limeQuery) {
+        limeAll = r.movies;
+        renderLimePage();   // grilla paginada + pager
+      }
+      renderYifyDash();   // 2 celdas del dashboard salen de este listado
+    } else {
+      markLimeDown(r && r.error);
+    }
+  } catch (e) {
+    markLimeDown(String(e && e.message || e));
+  } finally {
+    if (btn) btn.disabled = false;
+    limeFetching = false;
+  }
+}
+
+// Búsqueda de películas en LimeTorrents (la dispara el buscador del tab
+// Films, la misma caja que YIFY): con query la grilla de Lime muestra esos
+// resultados agrupados por película; al limpiar vuelve a los recientes.
+let limeQuery = '';
+async function limeSearchMovies(q) {
+  limeQuery = String(q || '').trim();
+  if (!limeQuery) { limePage = 1; limeOk ? refreshLime() : initLime(); return; }
+  const el = $('lime-list');
+  if (el) { el.className = 'yify-grid'; el.innerHTML = `<div class="ai-loading">Buscando en LimeTorrents…</div>`; }
+  const pager = $('lime-pager');
+  if (pager) pager.innerHTML = '';
+  adjustWindowSize();
+  const mine = limeQuery;
+  try {
+    const r = await window.api.lime.search({ cat: 'movies', query: mine });
+    if (limeQuery !== mine) return;   // ya hay otra búsqueda (o se limpió)
+    if (r && !r.error && Array.isArray(r.movies)) {
+      limeOk = true;
+      setLimeStatus('connected', 'RSS conectado');
+      limeAll = r.movies;
+      limePage = 1;
+      renderLimePage();
+    } else if (el) {
+      el.innerHTML = `<div class="ai-loading">Falló la búsqueda${r && r.error ? ` (${escapeHtml(r.error)})` : ''}</div>`;
+      adjustWindowSize();
+    }
+  } catch (e) {
+    if (limeQuery === mine && el) {
+      el.innerHTML = `<div class="ai-loading">Falló la búsqueda (${escapeHtml(String(e && e.message || e))})</div>`;
+      adjustWindowSize();
+    }
+  }
+}
+
+// Health check de arranque. También lo reusa el botón "Reintentar".
+async function initLime() {
+  setLimeStatus('checking', 'Verificando…');
+  const list = $('lime-list');
+  if (list) list.innerHTML = `<div class="ai-loading">Verificando RSS…</div>`;
+  let st;
+  try { st = await window.api.lime.check(); } catch { st = { ok: false, error: 'error interno' }; }
+  if (!limeTimerStarted) {
+    limeTimerStarted = true;
+    setInterval(() => { if (limeOk) refreshLime(); }, YIFY_INTERVAL_MS);
+  }
+  if (st && st.ok) {
+    limeOk = true;
+    setLimeStatus('connected', 'RSS conectado');
+    refreshLime();
+  } else {
+    markLimeDown(st && st.error);
+  }
+}
+
+const limeRefreshBtn = $('lime-refresh');
+if (limeRefreshBtn) limeRefreshBtn.addEventListener('click', () => {
+  limeOk ? refreshLime() : initLime();
+});
+
+// ── Secciones de LimeTorrents por categoría (Series / Juegos) ───────────────
+// Cards agrupadas servidas por main (lime:tv-shows / lime:games): series con
+// el estilo de EZTV (una card por show, episodios adentro) y juegos con el de
+// CheapShark (una card por juego con sus releases). Mismo patrón defensivo de
+// siempre (RSS caído → Reintentar). `search(q)` conecta el buscador del tab
+// con el buscador del sitio (searchrss filtrado por categoría): con query la
+// grilla muestra esos resultados y el refresco automático no la pisa; al
+// limpiar vuelve al listado reciente.
+// `getView` devuelve la vista vigente del tab (el toggle de la barra manda
+// sobre las dos fuentes); `viewClass(view)` es la clase del contenedor y
+// `renderCards(el, shown, view)` pinta según la vista.
+function limeCardSection({ prefix, viewClass, noun, getView, fetchList, searchCat, pickGroups, renderCards }) {
+  const st = { ok: null, all: [], page: 1, shown: [], query: '', fetching: false, timer: false };
+  const $id = (suf) => $(`${prefix}-${suf}`);
+  const view = () => (getView ? getView() : 'grid');
+  const pageSize = () => YIFY_PAGE_SIZES[view()] || 12;
+
+  function setStatus(kind, text) {
+    const wrap = $id('status'), txt = $id('status-text');
+    if (!wrap) return;
+    wrap.className = `db-status ${kind}`;
+    if (txt) txt.textContent = text;
+  }
+
+  function renderDown(err) {
+    const el = $id('list'), pager = $id('pager');
+    if (pager) pager.innerHTML = '';
+    if (!el) return;
+    el.className = 'yify-table';
+    el.innerHTML = `
+      <div class="yify-down">
+        <div class="yify-down-msg">⚠️ El RSS de LimeTorrents no responde${err ? ` <span class="yify-down-err">(${escapeHtml(err)})</span>` : ''}</div>
+        <button class="fin-btn js-lime-retry">Reintentar</button>
+      </div>`;
+    el.querySelector('.js-lime-retry').addEventListener('click', init);
+  }
+
+  function markDown(err) {
+    st.ok = false; st.all = []; st.page = 1; st.shown = [];
+    setStatus('disconnected', 'RSS caído');
+    renderDown(err);
+  }
+
+  function renderPager(totalPages) {
+    const el = $id('pager');
+    if (!el) return;
+    if (totalPages <= 1) { el.innerHTML = ''; return; }
+    el.innerHTML = `
+      <button class="fin-month-nav-btn js-prev" title="Página anterior" ${st.page <= 1 ? 'disabled' : ''}>‹</button>
+      <span class="yify-pager-info">Página ${st.page.toLocaleString('es-UY')} de ${totalPages.toLocaleString('es-UY')} · ${st.all.length.toLocaleString('es-UY')} ${noun}</span>
+      <button class="fin-month-nav-btn js-next" title="Página siguiente" ${st.page >= totalPages ? 'disabled' : ''}>›</button>`;
+    el.querySelector('.js-prev').addEventListener('click', () => { if (st.page > 1) { st.page--; renderPage(); } });
+    el.querySelector('.js-next').addEventListener('click', () => { st.page++; renderPage(); });
+  }
+
+  function renderPage() {
+    const el = $id('list');
+    if (!el) return;
+    const v = view();
+    const size = pageSize();
+    el.className = viewClass(v);
+    const totalPages = Math.max(1, Math.ceil(st.all.length / size));
+    if (st.page > totalPages) st.page = totalPages;
+    const start = (st.page - 1) * size;
+    st.shown = st.all.slice(start, start + size);
+    if (!st.shown.length) {
+      el.innerHTML = `<div class="ai-loading">${st.query
+        ? `Sin resultados en LimeTorrents para “${escapeHtml(st.query)}”`
+        : 'Sin subidas recientes'}</div>`;
+    } else {
+      renderCards(el, st.shown, v);
+    }
+    renderPager(totalPages);
+    adjustWindowSize();
+  }
+
+  // Cambio de vista desde la barra del tab: rehace la página con el tamaño
+  // nuevo manteniendo la posición aproximada. No vuelve a pegarle al RSS.
+  function setView(oldSize) {
+    const newSize = pageSize();
+    if (st.all.length) {
+      st.page = Math.floor(((st.page - 1) * (oldSize || newSize)) / newSize) + 1;
+      renderPage();
+    }
+  }
+
+  async function refresh() {
+    if (st.fetching) return;
+    st.fetching = true;
+    const btn = $id('refresh');
+    if (btn) btn.disabled = true;
+    try {
+      const r = await fetchList();
+      const groups = (r && !r.error) ? pickGroups(r) : null;
+      if (Array.isArray(groups)) {
+        st.ok = true;
+        setStatus('connected', 'RSS conectado');
+        // Una búsqueda activa no se pisa con el listado de recientes.
+        if (!st.query) { st.all = groups; renderPage(); }
+      } else {
+        markDown(r && r.error);
+      }
+    } catch (e) {
+      markDown(String(e && e.message || e));
+    } finally {
+      if (btn) btn.disabled = false;
+      st.fetching = false;
+    }
+  }
+
+  // Búsqueda del sitio: la dispara el buscador del tab (misma caja que la
+  // otra fuente). Query vacía = volver al listado reciente.
+  async function search(q) {
+    const query = String(q || '').trim();
+    if (query === st.query) return;
+    st.query = query;
+    if (!query) { st.page = 1; st.ok ? refresh() : init(); return; }
+    const el = $id('list');
+    if (el) { el.className = viewClass(view()); el.innerHTML = `<div class="ai-loading">Buscando en LimeTorrents…</div>`; }
+    const pager = $id('pager');
+    if (pager) pager.innerHTML = '';
+    adjustWindowSize();
+    try {
+      const r = await window.api.lime.search({ cat: searchCat, query });
+      if (st.query !== query) return;   // ya hay otra búsqueda (o se limpió)
+      const groups = (r && !r.error) ? pickGroups(r) : null;
+      if (Array.isArray(groups)) {
+        st.ok = true;
+        setStatus('connected', 'RSS conectado');
+        st.all = groups;
+        st.page = 1;
+        renderPage();
+      } else if (el) {
+        el.innerHTML = `<div class="ai-loading">Falló la búsqueda${r && r.error ? ` (${escapeHtml(r.error)})` : ''}</div>`;
+        adjustWindowSize();
+      }
+    } catch (e) {
+      if (st.query === query && el) {
+        el.innerHTML = `<div class="ai-loading">Falló la búsqueda (${escapeHtml(String(e && e.message || e))})</div>`;
+        adjustWindowSize();
+      }
+    }
+  }
+
+  // El primer fetch hace de health check (no hay probe aparte por categoría).
+  function init() {
+    setStatus('checking', 'Verificando…');
+    const el = $id('list');
+    if (el) { el.className = viewClass(view()); el.innerHTML = `<div class="ai-loading">Verificando RSS…</div>`; }
+    if (!st.timer) {
+      st.timer = true;
+      setInterval(() => { if (st.ok && !st.query) refresh(); }, YIFY_INTERVAL_MS);
+    }
+    refresh();
+  }
+
+  const refreshBtn = $id('refresh');
+  if (refreshBtn) refreshBtn.addEventListener('click', () => (st.ok ? refresh() : init()));
+
+  return { init, refresh, search, setView, get ok() { return st.ok; } };
+}
+
+// ── Vistas compartidas de los tabs Series y Juegos ─────────────
+// Igual que en Films: el toggle vive en la barra del tab (fuera de los cards)
+// y manda sobre las DOS fuentes — EZTV + Lime en Series, CheapShark + Lime en
+// Juegos. Las tres vistas son las mismas de siempre: tarjetas, iconos chicos
+// y lista con detalles. La elección persiste en localStorage.
+let ezView = 'grid';
+try { ezView = localStorage.getItem('ezView') || 'grid'; } catch {}
+let gdView = 'grid';
+try { gdView = localStorage.getItem('gdView') || 'grid'; } catch {}
+
+function tvViewClass(view) {
+  if (view === 'icons') return 'yify-icons-grid';
+  if (view === 'list') return 'yify-table tv-table';
+  return 'ez-cards-grid';
+}
+
+function gdViewClass(view) {
+  if (view === 'icons') return 'gd-icons-grid';
+  if (view === 'list') return 'yify-table gd-table';
+  return 'gd-grid';
+}
+
+// Celdas de serie: tarjetas e iconos comparten markup (cambia la grilla del
+// contenedor). `cls` es la clase de click de cada fuente (EZTV o Lime).
+function tvShowCellsHtml(shown, cls, emoji, meta) {
+  return shown.map((g, i) => `
+    <div class="yify-dash-cell ez-card ${cls}" data-i="${i}"
+      title="${escapeHtml(g.title)}${g.year ? ` (${g.year})` : ''} — ver episodios">
+      ${(g.cover || g.image)
+        ? `<img class="yify-poster" src="${escapeHtml(g.cover || g.image)}" loading="lazy" alt="">`
+        : `<div class="yify-poster yify-noposter">${emoji}</div>`}
+      ${(g.epCount ?? (g.episodes || []).length) > 1 ? `<span class="ez-ep-count">${g.epCount ?? g.episodes.length} eps</span>` : ''}
+      <div class="yify-dash-title">${escapeHtml(g.title)}</div>
+      <div class="yify-dash-meta">${escapeHtml(meta(g))}</div>
+    </div>`).join('');
+}
+
+// Vista lista de series: una fila por serie (año, episodios, último, fecha).
+function tvShowRowsHtml(shown, cls) {
+  return `
+    <div class="yify-tr yify-tr-head">
+      <span>Serie</span>
+      <span class="yify-td-num">Año</span>
+      <span class="yify-td-num">Eps</span>
+      <span>Último</span>
+      <span class="yify-td-num">Subido</span>
+    </div>` + shown.map((g, i) => {
+    const last = g.episodes && g.episodes[0];
+    return `
+      <div class="yify-tr">
+        <span class="yify-td-title ${cls}" data-i="${i}" title="${escapeHtml(g.title)} — ver episodios">${escapeHtml(g.title)}</span>
+        <span class="yify-td-num">${g.year ?? '—'}</span>
+        <span class="yify-td-num">${g.epCount ?? (g.episodes || []).length}</span>
+        <span class="yify-td-qual">${last ? escapeHtml(ezEpTag(last)) : '—'}</span>
+        <span class="yify-td-num">${g.latestAt ? escapeHtml(ezDate(g.latestAt)) : '—'}</span>
+      </div>`;
+  }).join('');
+}
+
+// Vista iconos de los juegos de Lime: capsule de Steam + título + meta.
+function limeGamesCellsHtml(shown) {
+  return shown.map((g, i) => {
+    const seeds = Math.max(0, ...g.torrents.map((t) => t.seeds || 0));
+    const meta = [ezDate(g.latestAt), seeds > 0 ? `▲ ${seeds}` : ''].filter(Boolean).join(' · ');
+    return `
+      <div class="yify-dash-cell js-lg-card" data-i="${i}"
+        title="${escapeHtml(g.title)} — abrir en LimeTorrents">
+        ${g.cover
+          ? `<img class="yify-poster" src="${escapeHtml(g.cover)}" loading="lazy" alt="">`
+          : `<div class="yify-poster yify-noposter">🎮</div>`}
+        ${g.torrents.length > 1 ? `<span class="ez-ep-count">${g.torrents.length}</span>` : ''}
+        <div class="yify-dash-title">${escapeHtml(g.title)}</div>
+        <div class="yify-dash-meta">${escapeHtml(meta)}</div>
+      </div>`;
+  }).join('');
+}
+
+// Vista lista de los juegos de Lime: una fila por release (tamaño, seeds,
+// fecha y magnet), con el juego agrupado en la segunda columna.
+function limeGamesRowsHtml(shown) {
+  const rows = [];
+  shown.forEach((g, i) => {
+    (g.torrents || []).forEach((t, ti) => {
+      rows.push(`
+        <div class="yify-tr">
+          <span class="yify-td-title js-lg-card" data-i="${i}" title="${escapeHtml(t.title)} — abrir en LimeTorrents">${escapeHtml(t.title)}</span>
+          <span class="yify-td-store">${escapeHtml(g.title)}</span>
+          <span class="yify-td-num">${t.size ? escapeHtml(t.size) : '—'}</span>
+          <span class="yify-td-num yify-td-seeds">${t.seeds != null ? t.seeds : '—'}</span>
+          <span class="yify-td-num">${t.releasedAt ? escapeHtml(ezDate(t.releasedAt)) : '—'}</span>
+          <span class="yify-td-mag">${t.magnet ? `
+            <button class="yify-q yify-q-mini js-lg-mag" data-i="${i}" data-t="${ti}"
+              title="Magnet${t.size ? ` · ${escapeHtml(t.size)}` : ''}">🧲</button>` : ''}</span>
+        </div>`);
+    });
+  });
+  return `
+    <div class="yify-tr yify-tr-head">
+      <span>Release</span>
+      <span>Juego</span>
+      <span class="yify-td-num">Tamaño</span>
+      <span class="yify-td-num" title="Seeders">Seeds</span>
+      <span class="yify-td-num">Subido</span>
+      <span></span>
+    </div>` + rows.join('');
+}
+
+// Meta de la card de serie: S·E del último episodio + fecha (como EZTV).
+function limeTvCardMeta(g) {
+  const bits = [];
+  const last = g.episodes && g.episodes[0];
+  if (last) {
+    const tag = ezEpTag(last);
+    if (tag !== '—') bits.push(tag);
+  }
+  if (g.latestAt) bits.push(ezDate(g.latestAt));
+  return bits.join(' · ');
+}
+
+// Series: una card por show → click abre el MISMO modal de serie de EZTV
+// (ficha TMDB + "Subidos recientemente" con los episodios de Lime + "Todos
+// los episodios" vía EZTV por imdb id). Los ids de episodio van negados para
+// no chocar con los de EZTV en favoritos.
+const limeTv = limeCardSection({
+  prefix: 'lime-tv', noun: 'series',
+  getView: () => ezView,
+  viewClass: tvViewClass,
+  fetchList: () => window.api.lime.tvShows(),
+  searchCat: 'tv',
+  pickGroups: (r) => r.shows,
+  renderCards(el, shown, view) {
+    el.innerHTML = view === 'list'
+      ? tvShowRowsHtml(shown, 'js-ltv-card')
+      : tvShowCellsHtml(shown, 'js-ltv-card', '📺', limeTvCardMeta);
+    el.querySelectorAll('.js-ltv-card').forEach((c) => {
+      c.addEventListener('click', () => {
+        const g = shown[+c.dataset.i];
+        if (!g) return;
+        openEzShowModal({
+          imdbNum: g.imdbNum || null,
+          title: g.title,
+          year: g.year,
+          image: g.cover,
+          episodes: (g.episodes || []).map((t) => ({ ...t, id: -t.id, filename: t.title })),
+        });
+      });
+    });
+  },
+});
+
+// Juegos: una card por juego (como las ofertas de CheapShark): capsule de
+// Steam, última subida y magnets de sus releases (updates/repacks). El click
+// en la card abre la página del torrent en LimeTorrents.
+const limeGames = limeCardSection({
+  prefix: 'lime-games', noun: 'juegos',
+  getView: () => gdView,
+  viewClass: gdViewClass,
+  fetchList: () => window.api.lime.games(),
+  searchCat: 'games',
+  pickGroups: (r) => r.games,
+  renderCards(el, shown, view) {
+    if (view === 'icons') { el.innerHTML = limeGamesCellsHtml(shown); }
+    else if (view === 'list') { el.innerHTML = limeGamesRowsHtml(shown); }
+    else el.innerHTML = shown.map((g, i) => {
+      const seeds = Math.max(0, ...g.torrents.map((t) => t.seeds || 0));
+      const meta = [ezDate(g.latestAt), seeds > 0 ? `▲ ${seeds}` : '']
+        .filter(Boolean).join(' · ');
+      return `
+      <div class="gd-card js-lg-card" data-i="${i}"
+        title="${escapeHtml(g.torrents[0] ? g.torrents[0].title : g.title)} — abrir en LimeTorrents">
+        <div class="gd-thumb-wrap">
+          ${g.cover
+            ? `<img class="gd-thumb lg-thumb" src="${escapeHtml(g.cover)}" loading="lazy" alt="">`
+            : `<div class="gd-thumb lg-thumb gd-nothumb">🎮</div>`}
+          ${g.torrents.length > 1 ? `<span class="ez-ep-count">${g.torrents.length}</span>` : ''}
+        </div>
+        <div class="gd-info">
+          <div class="gd-title">${escapeHtml(g.title)}</div>
+          <div class="gd-meta">${escapeHtml(meta)}</div>
+          <div class="yify-quals">
+            ${g.torrents.slice(0, 3).map((t, ti) => `
+              <button class="yify-q js-lg-mag" data-i="${i}" data-t="${ti}"
+                title="${escapeHtml(t.title)}${t.size ? ` · ${escapeHtml(t.size)}` : ''}${t.seeds != null ? ` · ${t.seeds} seeds` : ''}">
+                🧲 ${escapeHtml(t.size || 'magnet')}
+              </button>`).join('')}
+          </div>
+        </div>
+      </div>`;
+    }).join('');
+    el.querySelectorAll('.js-lg-card').forEach((c) => {
+      c.addEventListener('click', () => {
+        const g = shown[+c.dataset.i];
+        const t = g && g.torrents[0];
+        if (t && t.page) window.api.openExternal(t.page);
+      });
+    });
+    el.querySelectorAll('.js-lg-mag').forEach((b) => {
+      b.addEventListener('click', (e) => {
+        e.stopPropagation();   // el magnet no debe abrir también la página
+        const g = shown[+b.dataset.i];
+        const t = g && g.torrents[+b.dataset.t];
+        if (t && t.magnet) window.api.openExternal(t.magnet);
+      });
+    });
+  },
+});
+
 // ── EZTV series (tab Torrents Series) ──────────────────────────
 // La vista principal son cards por serie (como Films): main agrupa la página
 // de torrents por imdb_id / nombre y la enriquece con el poster de IMDb
@@ -1831,7 +2784,7 @@ window.api.favs.ids().then((ids) => {
 // + búsqueda de todos los demás por imdb_id. La búsqueda por nombre va contra
 // la suggestion API de IMDb (chips) y también abre el modal. Favoritos =
 // episodios guardados completos en la base (imagen + magnet links).
-const EZ_PAGE_SIZE = 50;     // torrents por página de la API (se apilan por serie)
+const EZ_PAGE_SIZE = 40;     // series por página (el listado sale del archivo)
 const EZ_MODAL_PAGE = 50;    // episodios por tanda en "Todos los episodios"
 let ezOk = null;          // null = verificando; resultado del health check
 let ezGroups = [];        // cards de series renderizadas (para los clicks)
@@ -2066,17 +3019,11 @@ function renderEzShows(groups) {
     adjustWindowSize();
     return;
   }
-  el.className = 'ez-cards-grid';
-  el.innerHTML = ezGroups.map((g, i) => `
-    <div class="yify-dash-cell ez-card js-ez-card" data-i="${i}"
-      title="${escapeHtml(g.title)}${g.year ? ` (${g.year})` : ''} — ver episodios">
-      ${g.image
-        ? `<img class="yify-poster" src="${escapeHtml(g.image)}" loading="lazy" alt="">`
-        : `<div class="yify-poster yify-noposter">📺</div>`}
-      ${g.episodes.length > 1 ? `<span class="ez-ep-count">${g.episodes.length} eps</span>` : ''}
-      <div class="yify-dash-title">${escapeHtml(g.title)}</div>
-      <div class="yify-dash-meta">${escapeHtml(ezCardMeta(g))}</div>
-    </div>`).join('');
+  // La vista sale del toggle de la barra del tab (la misma que usa Lime).
+  el.className = tvViewClass(ezView);
+  el.innerHTML = ezView === 'list'
+    ? tvShowRowsHtml(ezGroups, 'js-ez-card')
+    : tvShowCellsHtml(ezGroups, 'js-ez-card', '📺', ezCardMeta);
   el.querySelectorAll('.js-ez-card').forEach((c) => {
     c.addEventListener('click', () => openEzShowModal(ezGroups[+c.dataset.i]));
   });
@@ -2180,7 +3127,7 @@ function renderEzPager(count) {
   if (ezPage > totalPages) ezPage = totalPages;
   el.innerHTML = `
     <button class="fin-month-nav-btn js-ez-prev" title="Página anterior" ${ezPage <= 1 ? 'disabled' : ''}>‹</button>
-    <span class="yify-pager-info">Página ${ezPage.toLocaleString('es-UY')} de ${totalPages.toLocaleString('es-UY')} · ${count.toLocaleString('es-UY')} torrents</span>
+    <span class="yify-pager-info">Página ${ezPage.toLocaleString('es-UY')} de ${totalPages.toLocaleString('es-UY')} · ${count.toLocaleString('es-UY')} series</span>
     <button class="fin-month-nav-btn js-ez-next" title="Página siguiente" ${ezPage >= totalPages ? 'disabled' : ''}>›</button>`;
   el.querySelector('.js-ez-prev').addEventListener('click', () => {
     if (ezPage > 1) { ezPage--; loadEzList(); }
@@ -2201,7 +3148,8 @@ async function loadEzList() {
     const r = await window.api.eztv.shows({ limit: EZ_PAGE_SIZE, page: ezPage });
     if (r && !r.error) {
       ezOk = true;
-      setEzStatus('connected', 'API conectada');
+      setEzStatus(r.stale ? 'disconnected' : 'connected',
+        r.stale ? 'API caída — listando el archivo' : 'API conectada');
       renderEzShows(r.shows);
       renderEzPager(r.count);
     } else {
@@ -2213,8 +3161,10 @@ async function loadEzList() {
 }
 
 // Búsqueda: nombre → chips de series (IMDb) → click → modal de la serie.
+// La misma caja también busca en LimeTorrents (grilla de la sección de Lime).
 async function ezSearchShows() {
   const q = ($('ez-search') ? $('ez-search').value : '').trim();
+  limeTv.search(q);
   const box = $('ez-shows');
   if (!q || !box) return;
   box.innerHTML = `<div class="ai-loading">Buscando series…</div>`;
@@ -2271,6 +3221,10 @@ function setEzFavsMode(on) {
   });
   const shows = $('ez-shows');
   if (shows) shows.innerHTML = '';
+  // Ídem Films: la barra manda sobre el tab, así que la sección de "Últimas
+  // Series" de Lime se esconde mientras se navegan los favoritos.
+  const limeTvCard = $('lime-tv-list') && $('lime-tv-list').closest('section');
+  if (limeTvCard) limeTvCard.style.display = ezFavsMode ? 'none' : '';
   if (ezFavsMode) loadEzFavs();
   else if (ezOk) loadEzList();
   else initEztv();
@@ -2283,13 +3237,15 @@ async function initEztv() {
   if (list) list.innerHTML = `<div class="ai-loading">Verificando API…</div>`;
   let st;
   try { st = await window.api.eztv.check(); } catch { st = { ok: false, error: 'error interno' }; }
+  // Ídem Films: el listado sale del archivo, así que se intenta igual y solo
+  // se muestra "API caída" si no hay nada guardado (loadEzList → markEzDown).
   if (st && st.ok) {
     ezOk = true;
     setEzStatus('connected', 'API conectada');
-    loadEzList();
   } else {
-    markEzDown(st && st.error);
+    setEzStatus('disconnected', 'API caída — listando el archivo');
   }
+  loadEzList();
 }
 
 const ezSearchBtn = $('ez-search-btn');
@@ -2300,10 +3256,32 @@ if (ezSearchInput) {
   // Búsqueda en vivo: al limpiar, borra los chips de series y vuelve al listado.
   const ezLiveSearch = debounce(() => {
     if (ezSearchInput.value.trim()) ezSearchShows();
-    else { const box = $('ez-shows'); if (box) box.innerHTML = ''; adjustWindowSize(); }
+    else {
+      limeTv.search('');   // Lime vuelve al listado reciente
+      const box = $('ez-shows');
+      if (box) box.innerHTML = '';
+      adjustWindowSize();
+    }
   }, 400);
   ezSearchInput.addEventListener('input', ezLiveSearch);
 }
+// Toggle de vista del TAB Series (barra compartida): re-renderiza lo ya
+// cargado en las dos fuentes sin volver a pegarle a las APIs.
+function setEzView(view) {
+  if (view === ezView) return;
+  const oldSize = YIFY_PAGE_SIZES[ezView] || 12;
+  ezView = view;
+  try { localStorage.setItem('ezView', view); } catch {}
+  document.querySelectorAll('#ez-view-toggle .yify-view-btn').forEach((b) => {
+    b.classList.toggle('active', b.dataset.view === view);
+  });
+  if (!ezFavsMode && ezGroups.length) renderEzShows(ezGroups);
+  limeTv.setView(oldSize);
+}
+document.querySelectorAll('#ez-view-toggle .yify-view-btn').forEach((b) => {
+  b.classList.toggle('active', b.dataset.view === ezView);
+  b.addEventListener('click', () => setEzView(b.dataset.view));
+});
 const ezFavsBtn = $('ez-favs-btn');
 if (ezFavsBtn) ezFavsBtn.addEventListener('click', () => setEzFavsMode(!ezFavsMode));
 const ezRefreshBtn = $('ez-refresh');
@@ -2767,6 +3745,7 @@ document.querySelectorAll('#news-view-toggle .yify-view-btn').forEach((b) => {
 let gdStarted = false;
 let gdPage = 0;
 let gdLoading = false;
+let gdDeals = [];   // ofertas de la página actual (para re-pintar al cambiar de vista)
 
 function fmtUsd2(v) {
   if (v == null || !isFinite(v)) return '—';
@@ -2779,6 +3758,7 @@ async function loadGames() {
   gdLoading = true;
   const btn = $('gd-refresh');
   if (btn) btn.classList.add('spinning');
+  list.className = gdViewClass(gdView);
   list.innerHTML = `<div class="ai-loading">Cargando ofertas…</div>`;
   const pager = $('gd-pager');
   if (pager) pager.innerHTML = '';
@@ -2792,6 +3772,7 @@ async function loadGames() {
       maxPrice: parseInt(val('gd-maxprice', '0'), 10) || 0,
     });
     if (!r || r.error) {
+      gdDeals = [];
       list.innerHTML = `<div class="ai-loading">CheapShark no responde${r && r.error ? ` (${escapeHtml(r.error)})` : ''}</div>`;
       return;
     }
@@ -2805,12 +3786,72 @@ async function loadGames() {
         r.stores.map((s) => `<option value="${escapeHtml(s.id)}">${escapeHtml(s.name)}</option>`).join('');
       storeSel.value = cur;
     }
-    const deals = Array.isArray(r.deals) ? r.deals : [];
-    if (!deals.length) {
+    gdDeals = Array.isArray(r.deals) ? r.deals : [];
+    if (!gdDeals.length) {
+      list.className = gdViewClass(gdView);
       list.innerHTML = `<div class="ai-loading">Sin ofertas con esos filtros</div>`;
       return;
     }
-    list.innerHTML = deals.map((d, i) => `
+    renderGdDeals();
+    if (pager) {
+      // El listado sale del archivo (games.sqlite), así que ahora sí hay total
+      // y páginas: CheapShark no devolvía ninguna de las dos cosas.
+      const totalPages = Math.max(1, Math.ceil((r.count || gdDeals.length) / 24));
+      pager.innerHTML = `
+        <button class="fin-month-nav-btn js-gd-prev" title="Página anterior" ${gdPage <= 0 ? 'disabled' : ''}>‹</button>
+        <span class="yify-pager-info">Página ${(gdPage + 1).toLocaleString('es-UY')} de ${totalPages.toLocaleString('es-UY')}${r.count ? ` · ${r.count.toLocaleString('es-UY')} ofertas` : ''}</span>
+        <button class="fin-month-nav-btn js-gd-next" title="Página siguiente" ${gdPage + 1 >= totalPages ? 'disabled' : ''}>›</button>`;
+      pager.querySelector('.js-gd-prev').addEventListener('click', () => { if (gdPage > 0) { gdPage--; loadGames(); } });
+      pager.querySelector('.js-gd-next').addEventListener('click', () => { gdPage++; loadGames(); });
+    }
+  } finally {
+    gdLoading = false;
+    if (btn) btn.classList.remove('spinning');
+    adjustWindowSize();
+  }
+}
+
+// Pinta las ofertas ya bajadas en la vista vigente del tab (tarjetas, iconos
+// o lista). No vuelve a pegarle a CheapShark.
+function renderGdDeals() {
+  const list = $('gd-list');
+  if (!list) return;
+  list.className = gdViewClass(gdView);
+  if (!gdDeals.length) {
+    list.innerHTML = `<div class="ai-loading">Sin ofertas con esos filtros</div>`;
+    return;
+  }
+  if (gdView === 'icons') {
+    list.innerHTML = gdDeals.map((d, i) => `
+      <div class="yify-dash-cell js-gd-open" data-i="${i}"
+        title="${escapeHtml(d.title)} — comprar en ${escapeHtml(d.store)}">
+        ${d.thumb
+          ? `<img class="yify-poster" src="${escapeHtml(d.thumb)}" loading="lazy" alt="">`
+          : `<div class="yify-poster yify-noposter">🎮</div>`}
+        ${d.savings ? `<span class="gd-savings">-${d.savings}%</span>` : ''}
+        <div class="yify-dash-title">${escapeHtml(d.title)}</div>
+        <div class="yify-dash-meta">${d.salePrice === 0 ? 'GRATIS' : escapeHtml(fmtUsd2(d.salePrice))}</div>
+      </div>`).join('');
+  } else if (gdView === 'list') {
+    list.innerHTML = `
+      <div class="yify-tr yify-tr-head">
+        <span>Juego</span>
+        <span>Tienda</span>
+        <span class="yify-td-num">Antes</span>
+        <span class="yify-td-num">Ahora</span>
+        <span class="yify-td-num">Descuento</span>
+        <span class="yify-td-num" title="Metacritic">MC</span>
+      </div>` + gdDeals.map((d, i) => `
+      <div class="yify-tr">
+        <span class="yify-td-title js-gd-open" data-i="${i}" title="${escapeHtml(d.title)} — comprar en ${escapeHtml(d.store)}">${escapeHtml(d.title)}</span>
+        <span class="yify-td-store">${escapeHtml(d.store)}</span>
+        <span class="yify-td-old">${d.normalPrice != null && d.salePrice != null && d.normalPrice > d.salePrice ? escapeHtml(fmtUsd2(d.normalPrice)) : ''}</span>
+        <span class="yify-td-new">${d.salePrice === 0 ? 'GRATIS' : escapeHtml(fmtUsd2(d.salePrice))}</span>
+        <span class="yify-td-num yify-td-seeds">${d.savings ? `-${d.savings}%` : '—'}</span>
+        <span class="yify-td-num">${d.metacritic || '—'}</span>
+      </div>`).join('');
+  } else {
+    list.innerHTML = gdDeals.map((d, i) => `
       <div class="gd-card js-gd-open" data-i="${i}" title="${escapeHtml(d.title)} — comprar en ${escapeHtml(d.store)}">
         <div class="gd-thumb-wrap">
           ${d.thumb ? `<img class="gd-thumb" src="${escapeHtml(d.thumb)}" loading="lazy" alt="">` : `<div class="gd-thumb gd-nothumb">🎮</div>`}
@@ -2825,28 +3866,42 @@ async function loadGames() {
           </div>
         </div>
       </div>`).join('');
-    list.querySelectorAll('.js-gd-open').forEach((c) => {
-      c.addEventListener('click', () => {
-        const d = deals[+c.dataset.i];
-        if (d && d.url) window.api.openExternal(d.url);
-      });
-    });
-    if (pager) {
-      pager.innerHTML = `
-        <button class="fin-month-nav-btn js-gd-prev" title="Página anterior" ${gdPage <= 0 ? 'disabled' : ''}>‹</button>
-        <span class="yify-pager-info">Página ${gdPage + 1}</span>
-        <button class="fin-month-nav-btn js-gd-next" title="Página siguiente" ${deals.length < 24 ? 'disabled' : ''}>›</button>`;
-      pager.querySelector('.js-gd-prev').addEventListener('click', () => { if (gdPage > 0) { gdPage--; loadGames(); } });
-      pager.querySelector('.js-gd-next').addEventListener('click', () => { gdPage++; loadGames(); });
-    }
-  } finally {
-    gdLoading = false;
-    if (btn) btn.classList.remove('spinning');
-    adjustWindowSize();
   }
+  list.querySelectorAll('.js-gd-open').forEach((c) => {
+    c.addEventListener('click', () => {
+      const d = gdDeals[+c.dataset.i];
+      if (d && d.url) window.api.openExternal(d.url);
+    });
+  });
 }
 
-function gdSearchNew() { gdPage = 0; loadGames(); }
+// Toggle de vista del TAB Juegos (barra compartida): re-renderiza CheapShark y
+// LimeTorrents con lo ya cargado.
+function setGdView(view) {
+  if (view === gdView) return;
+  const oldSize = YIFY_PAGE_SIZES[gdView] || 12;
+  gdView = view;
+  try { localStorage.setItem('gdView', view); } catch {}
+  document.querySelectorAll('#gd-view-toggle .yify-view-btn').forEach((b) => {
+    b.classList.toggle('active', b.dataset.view === view);
+  });
+  renderGdDeals();
+  limeGames.setView(oldSize);
+  adjustWindowSize();
+}
+document.querySelectorAll('#gd-view-toggle .yify-view-btn').forEach((b) => {
+  b.classList.toggle('active', b.dataset.view === gdView);
+  b.addEventListener('click', () => setGdView(b.dataset.view));
+});
+
+function gdSearchNew() {
+  gdPage = 0;
+  loadGames();
+  // El mismo buscador le pega a los torrents de LimeTorrents; los cambios de
+  // filtros de CheapShark (tienda/orden/precio) no la re-disparan porque la
+  // sección ignora una query repetida.
+  limeGames.search($('gd-search') ? $('gd-search').value : '');
+}
 
 function initGames() {
   if (gdStarted) return;
@@ -5094,6 +6149,7 @@ async function loadSettings() {
   }
   loadMongoStatus();
   loadApiStatuses();
+  loadArchiveStatus();
 }
 
 // ── Settings: verificador de las APIs del sistema ───────────────
@@ -5199,10 +6255,11 @@ async function loadApiStatuses(force = false) {
 
 if (apisCheckBtn) apisCheckBtn.addEventListener('click', () => loadApiStatuses(true));
 
-// ── Finanzas DB: Mongo connection indicator + manual sync ──────
+// ── Bases de datos: indicador de conexión Mongo + sync automático ──
+// La sincronización corre sola en main (arranque + cada 15 min, siempre
+// aditiva); acá solo se muestra el estado y la hora del último sync.
 const mongoStatusEl = $('mongo-status');
 const mongoStatusText = $('mongo-status-text');
-const syncDbBtn = $('btn-sync-db');
 const syncStatus = $('sync-status');
 
 function setMongoStatus(kind, text) {
@@ -5211,15 +6268,66 @@ function setMongoStatus(kind, text) {
   mongoStatusText.textContent = text;
 }
 
-function setSyncStatus(msg, kind) {
-  if (!syncStatus) return;
-  syncStatus.textContent = msg || '';
-  syncStatus.className = 'setting-status' + (kind ? ` ${kind}` : '');
-  if (msg && kind === 'success') {
-    setTimeout(() => {
-      if (syncStatus.textContent === msg) { syncStatus.textContent = ''; syncStatus.className = 'setting-status'; }
-    }, 4000);
+// Progreso de los archivos históricos: cuántas filas hay guardadas de cada
+// fuente y en qué anda el crawler que las llena. Se refresca al abrir Settings.
+const archiveStatusEl = $('archive-status');
+const NUM = (n) => Number(n || 0).toLocaleString('es-UY');
+
+async function loadArchiveStatus() {
+  if (!archiveStatusEl) return;
+  let st = null;
+  try { st = await window.api.archive.status(); } catch {}
+  if (!st || st.error) { archiveStatusEl.textContent = ''; return; }
+  // El avance (páginas × 50) solo tiene sentido mientras el crawler recorre el
+  // catálogo: ya al día, la última página siempre se pasa un poco del total.
+  const part = (label, s, extra = '') =>
+    `${label} ${NUM(s.rows)}${extra} (${s.phase}${s.total && s.phase === 'catálogo' ? ` ${NUM(s.page * 50)}/${NUM(s.total)}` : ''})`;
+  archiveStatusEl.textContent = 'Archivo: '
+    + [part('🎬 YIFY', st.yify),
+      part('📺 EZTV', st.eztv, ` en ${NUM(st.eztv.shows)} series`),
+      part('🎮 Ofertas', st.games)].join(' · ');
+  archiveStatusEl.className = 'setting-status';
+}
+
+// Espacio del cluster. Un Atlas lleno deja de aceptar escrituras sin que se
+// note (los archivos siguen guardando en SQLite y el widget funciona igual):
+// este renglón es el que lo dice. El porcentaje solo aparece si el tope del
+// plan está declarado en config.json (`mongoStorageLimitMb`); el driver no lo
+// puede averiguar solo.
+const mongoSpaceEl = $('mongo-space');
+// MB hasta el giga, GB de ahí para arriba: un cluster pago se mide en GB y
+// "4300,0 MB" no se lee.
+const SIZE = (b) => {
+  const n = Number(b || 0);
+  return n >= 1024 * 1048576
+    ? `${(n / (1024 * 1048576)).toFixed(2).replace('.', ',')} GB`
+    : `${(n / 1048576).toFixed(1).replace('.', ',')} MB`;
+};
+
+function renderMongoSpace(st) {
+  if (!mongoSpaceEl) return;
+  const quota = (st && st.quota) || null;
+  const usage = (st && st.usage) || null;
+  if (quota && quota.blocked) {
+    const when = new Date(quota.at).toLocaleTimeString('es-UY', { hour: '2-digit', minute: '2-digit' });
+    mongoSpaceEl.textContent = `⚠️ MongoDB sin espacio: Atlas rechazó escrituras (${when})`
+      + `${usage ? ` — ${SIZE(usage.dataSize ?? usage.bytes)} ocupados` : ''}. Todo se sigue guardando en SQLite;`
+      + ' liberá espacio en el cluster y se reintenta al reiniciar.';
+    mongoSpaceEl.className = 'setting-status error';
+    return;
   }
+  if (!usage) { mongoSpaceEl.textContent = ''; mongoSpaceEl.className = 'setting-status'; return; }
+  // Se muestra `dataSize` porque es la misma medida que Atlas pone en la ficha
+  // del cluster ("Data Size"); ojo que la de Atlas suma TODAS las bases del
+  // cluster y esta es solo la del widget, así que el número de acá es menor.
+  const used = usage.dataSize ?? usage.bytes;
+  const limit = (quota && quota.limit) || 0;
+  const near = limit > 0 && used > limit * 0.8;
+  const docs = `${Number(usage.objects || 0).toLocaleString('es-UY')} documentos`;
+  mongoSpaceEl.textContent = limit > 0
+    ? `${near ? '⚠️ ' : ''}Base del widget en MongoDB: ${SIZE(used)} de ${SIZE(limit)} (${Math.round((used / limit) * 100)}%) · ${docs}`
+    : `Base del widget en MongoDB: ${SIZE(used)} · ${docs}`;
+  mongoSpaceEl.className = `setting-status${near ? ' warn' : ''}`;
 }
 
 async function loadMongoStatus() {
@@ -5229,31 +6337,34 @@ async function loadMongoStatus() {
     if (!st || !st.enabled) setMongoStatus('disconnected', 'No configurado');
     else if (st.connected) setMongoStatus('connected', 'Conectado a MongoDB');
     else setMongoStatus('disconnected', 'Sin conexión (modo local)');
+    renderMongoSpace(st);
   } catch {
     setMongoStatus('disconnected', 'Sin conexión (modo local)');
   }
 }
 
-if (syncDbBtn) syncDbBtn.addEventListener('click', async () => {
-  syncDbBtn.disabled = true;
-  setSyncStatus('Sincronizando…', null);
-  setMongoStatus('checking', 'Sincronizando…');
-  try {
-    const r = await window.api.finances.syncDb();
-    if (r && r.ok) {
-      setMongoStatus('connected', 'Conectado a MongoDB');
-      setSyncStatus(`Sincronizado: ${r.expenses} mov., ${r.snapshots} saldos` +
-        (r.pushed ? ` (${r.pushed} subidos)` : ''), 'success');
-      renderFinanzas(); // refresh the Finanzas view with the freshly pulled data
-    } else {
-      setMongoStatus('disconnected', 'Sin conexión (modo local)');
-      setSyncStatus((r && r.error) || 'No se pudo sincronizar', 'error');
+// Aviso de main al terminar cada sync automático: refresca Finanzas con lo
+// recién bajado y deja la hora visible en Settings.
+window.api.onDbSynced((info) => {
+  const when = new Date((info && info.at) || Date.now())
+    .toLocaleTimeString('es-UY', { hour: '2-digit', minute: '2-digit' });
+  if (info && info.ok) {
+    setMongoStatus('connected', 'Conectado a MongoDB');
+    // Cada sync es una tanda grande de escrituras: es el momento en el que un
+    // cluster lleno se delata, así que se refresca el renglón de espacio.
+    loadMongoStatus();
+    loadArchiveStatus();
+    if (syncStatus) {
+      syncStatus.textContent = `Última sincronización: ${when}`;
+      syncStatus.className = 'setting-status success';
     }
-  } catch (e) {
+    renderFinanzas();
+  } else {
     setMongoStatus('disconnected', 'Sin conexión (modo local)');
-    setSyncStatus('No se pudo sincronizar', 'error');
-  } finally {
-    syncDbBtn.disabled = false;
+    if (syncStatus) {
+      syncStatus.textContent = `Sin conexión con Mongo (último intento ${when}) — reintenta solo cada 15 min`;
+      syncStatus.className = 'setting-status';
+    }
   }
 });
 
@@ -5315,6 +6426,9 @@ autoLaunchCheckbox.addEventListener('change', async () => {
   loadSpeedtest();
 
   initYify();   // health check de la API de YIFY + primeras películas
+  initLime();   // ídem para el RSS de LimeTorrents (segunda fuente de Films)
+  limeTv.init();     // RSS de series de LimeTorrents (tab Series)
+  limeGames.init();  // RSS de juegos de LimeTorrents (tab Juegos)
   initEztv();   // ídem para la API de EZTV (tab Torrents Series)
 
   refreshEztvDash();                              // mitad derecha del card "Últimos estrenos"
@@ -5336,6 +6450,9 @@ autoLaunchCheckbox.addEventListener('change', async () => {
     refreshTvmaze();
     refreshEztvDash();
     yifyOk ? refreshYifyLatest() : initYify();   // si estaba caída, re-chequea
+    limeOk ? refreshLime() : initLime();         // ídem LimeTorrents RSS
+    limeTv.ok ? limeTv.refresh() : limeTv.init();          // ídem RSS series
+    limeGames.ok ? limeGames.refresh() : limeGames.init(); // ídem RSS juegos
     if (!ezOk) initEztv();                       // ídem EZTV
   });
 

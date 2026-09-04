@@ -263,22 +263,24 @@ function getAllSettings() {
   return rows;
 }
 
-// Overwrite the entire local data set with the given rows (the authoritative
-// copy pulled from Mongo). Runs in a single transaction + one disk write.
-// Each array element must already be in SQLite row shape:
+// Merge ADITIVO de la copia bajada de Mongo sobre lo local: nunca borra filas
+// locales — los snapshots remotos se insertan solo si no existen (clave
+// natural account+ts), los settings y expenses con la misma clave se pisan
+// con la versión remota y los solo-locales quedan intactos. Una transacción
+// + una escritura a disco. Cada elemento ya viene en forma de fila SQLite:
 //   snapshots: { account, ts, uyu, usd }
 //   settings:  { key, value }
 //   expenses:  { id, name, amount, currency, kind, billing_day, created_at, flow, detail, tx_date }
-function replaceAll({ snapshots = [], settings = [], expenses = [] } = {}) {
+function mergeAll({ snapshots = [], settings = [], expenses = [] } = {}) {
   if (!db) throw new Error('db not initialized');
   db.run('BEGIN TRANSACTION');
   try {
-    db.run('DELETE FROM snapshots');
-    db.run('DELETE FROM settings');
-    db.run('DELETE FROM expenses');
     for (const s of snapshots) {
-      db.run('INSERT INTO snapshots (account, ts, uyu, usd) VALUES (?, ?, ?, ?)',
-        [s.account, Number(s.ts), s.uyu == null ? null : Number(s.uyu), s.usd == null ? null : Number(s.usd)]);
+      db.run(
+        'INSERT INTO snapshots (account, ts, uyu, usd) ' +
+        'SELECT ?, ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM snapshots WHERE account = ? AND ts = ?)',
+        [s.account, Number(s.ts), s.uyu == null ? null : Number(s.uyu), s.usd == null ? null : Number(s.usd),
+         s.account, Number(s.ts)]);
     }
     for (const s of settings) {
       db.run('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)',
@@ -286,7 +288,7 @@ function replaceAll({ snapshots = [], settings = [], expenses = [] } = {}) {
     }
     for (const e of expenses) {
       db.run(
-        'INSERT INTO expenses (id, name, amount, currency, kind, billing_day, created_at, flow, detail, tx_date) ' +
+        'INSERT OR REPLACE INTO expenses (id, name, amount, currency, kind, billing_day, created_at, flow, detail, tx_date) ' +
         'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
         [Number(e.id), e.name, Number(e.amount), e.currency, e.kind,
          e.billing_day == null ? null : Number(e.billing_day), Number(e.created_at),
@@ -307,5 +309,5 @@ module.exports = {
   getFxMonthly, setFxMonth,
   getProjections, setProjections,
   listExpenses, insertExpense, updateExpense, deleteExpense,
-  getAllSnapshots, getAllSettings, replaceAll,
+  getAllSnapshots, getAllSettings, mergeAll,
 };
