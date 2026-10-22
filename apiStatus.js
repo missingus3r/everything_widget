@@ -123,9 +123,9 @@ const CHECKS = [
     url: 'https://api.tvmaze.com',
     endpoints: ['/lookup/shows?imdb=…', '/shows/{id}?embed=nextepisode'],
     run: () => probe('https://api.tvmaze.com/shows/1') },
-  { id: 'tmdb', name: 'Fichas de series', provider: 'TMDB', host: 'api.themoviedb.org',
+  { id: 'tmdb', name: 'Fichas de series y películas', provider: 'TMDB', host: 'api.themoviedb.org',
     url: 'https://api.themoviedb.org/3',
-    endpoints: ['/3/find/{imdb}', '/3/tv/{id}', '/3/tv/{id}/watch/providers'],
+    endpoints: ['/3/find/{imdb}', '/3/tv/{id}', '/3/tv/{id}/watch/providers', '/3/movie/{id}'],
     // Sin key devuelve 401: también cuenta como "en línea" (el server responde).
     run: () => probe('https://api.themoviedb.org/3/configuration', { okStatus: (s) => s > 0 && s < 500 }) },
   { id: 'reddit', name: 'Reddit', provider: 'feeds RSS', host: 'www.reddit.com',

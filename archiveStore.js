@@ -14,16 +14,17 @@
 //     congelaría la UI en cada página del crawler. Acá se marca sucio y se
 //     vuelca como mucho cada PERSIST_EVERY_MS, además de al cerrar la app. Lo
 //     que se pierda en un cierre forzado vuelve del sync con Mongo.
-//   • Escritura atómica (tmp + rename): un corte de luz a mitad de un volcado
-//     de 80 MB dejaba el .sqlite truncado y sin recuperación local.
+//   • Escritura atómica (tmp + fsync + rename, ver sqliteFile.js): un corte de
+//     luz a mitad de un volcado de 80 MB dejaba el .sqlite truncado — o, sin
+//     fsync, entero pero lleno de ceros — y sin recuperación local.
 //
 // Un store = un archivo .sqlite con N tablas registradas. Cada tabla declara
 // sus columnas una sola vez y de ahí salen el CREATE TABLE, el upsert, el
 // mapeo a documentos de Mongo y la vuelta.
 
-const fs = require('fs');
 const path = require('path');
 const mongo = require('./finances/mongo');
+const sqliteFile = require('./sqliteFile');
 
 const WASM_PATH = path.join(__dirname, 'node_modules', 'sql.js', 'dist');
 const PERSIST_EVERY_MS = 30 * 1000;          // volcado a disco, como mucho
@@ -59,7 +60,6 @@ function decode(c, v) {
 
 function createStore({ file }) {
   const DB_PATH = path.join(__dirname, file);
-  const TMP_PATH = `${DB_PATH}.tmp`;
   const tables = [];
   let db = null;
   let readyPromise = null;
@@ -74,29 +74,33 @@ function createStore({ file }) {
     );`;
 
   function ensure() {
-    if (!readyPromise) readyPromise = (async () => {
-      const initSqlJs = require('sql.js');
-      const SQL = await initSqlJs({ locateFile: (f) => path.join(WASM_PATH, f) });
-      db = fs.existsSync(DB_PATH)
-        ? new SQL.Database(fs.readFileSync(DB_PATH))
-        : new SQL.Database();
-      db.run(SCHEMA_STATE);
-      for (const t of tables) db.run(t.ddl);
-      markDirty();
-    })();
+    if (!readyPromise) {
+      const p = readyPromise = (async () => {
+        const initSqlJs = require('sql.js');
+        const SQL = await initSqlJs({ locateFile: (f) => path.join(WASM_PATH, f) });
+        // Un archivo dañado (p. ej. en cero tras un apagado inesperado) se
+        // aparta y se arranca de cero: el sync con Mongo vuelve a bajar todo.
+        db = sqliteFile.openDatabase(SQL, DB_PATH);
+        db.run(SCHEMA_STATE);
+        for (const t of tables) db.run(t.ddl);
+        markDirty();
+      })();
+      // Un fallo al abrir no queda cacheado para toda la sesión.
+      p.catch(() => { if (readyPromise === p) readyPromise = null; });
+    }
     return readyPromise;
   }
 
-  // Volcado atómico: export → .tmp → rename. El rename es la operación que
-  // "publica" la base nueva, así que un corte en el medio deja intacta la
-  // anterior en vez de un archivo a medio escribir.
+  // Volcado atómico: export → .tmp → fsync → rename (sqliteFile.writeAtomic).
+  // El fsync fuerza los bytes al disco y el rename "publica" la base nueva de
+  // una sola vez, así que un corte en el medio deja intacta la anterior en vez
+  // de un archivo a medio escribir o lleno de ceros.
   function persistNow() {
     if (!db || !dirty) return Promise.resolve();
     if (persisting) return persisting;
     dirty = false;
     const buf = Buffer.from(db.export());
-    persisting = fs.promises.writeFile(TMP_PATH, buf)
-      .then(() => fs.promises.rename(TMP_PATH, DB_PATH))
+    persisting = sqliteFile.writeAtomic(DB_PATH, buf)
       .catch((e) => {
         dirty = true;   // reintenta en el próximo ciclo
         console.warn(`[archive:${file}] no se pudo guardar:`, e.message);

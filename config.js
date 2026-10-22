@@ -14,6 +14,9 @@ const DEFAULTS = {
   financesMongoUri: '',
   // Zoom factor for the widget window (corner-drag scaling). 1 = 100%.
   widgetZoom: 1,
+  // Mantener la ventana siempre por encima de las demás. Apagado por defecto:
+  // así se puede tapar con cualquier otra app (Settings / menú de la bandeja).
+  alwaysOnTop: false,
   apiKeys: [],
   // Símbolos del bloque "Acciones y ETFs" del card Mercado (Finnhub).
   stockSymbols: ['AAPL', 'MSFT', 'NVDA', 'SPY', 'VOO'],
@@ -69,4 +72,26 @@ function saveConfig(patch) {
   return next;
 }
 
-module.exports = { loadConfig, saveConfig, CONFIG_PATH };
+// Key del tab API Keys por nombre de servicio. Match tolerante: se comparan
+// los nombres normalizados (minúsculas, sin espacios ni signos), se aceptan
+// los alias de cada servicio ("The Movie Database" → TMDB) y, como último
+// recurso, un nombre que contenga al buscado ("ElevenLabs Api", "Finnhub key").
+// Lo usan main.js (getApiKey) y los fetchers standalone (ElevenLabs).
+const KEY_ALIASES = {
+  tmdb: ['themoviedatabase', 'themoviedb', 'moviedatabase', 'moviedb', 'themovedatabase'],
+  github: ['githubtoken', 'gh'],
+  elevenlabs: ['elevenlabsapi', 'eleven', '11labs'],
+};
+const normKeyName = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+
+function findApiKey(list, name) {
+  const keys = Array.isArray(list) ? list : [];
+  const want = normKeyName(name);
+  if (!want) return '';
+  const names = [want, ...(KEY_ALIASES[want] || [])];
+  const hit = keys.find((k) => names.includes(normKeyName(k.name)))
+    || keys.find((k) => normKeyName(k.name).includes(want));
+  return (hit && hit.key) || '';
+}
+
+module.exports = { loadConfig, saveConfig, findApiKey, CONFIG_PATH };

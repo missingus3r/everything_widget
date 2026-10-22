@@ -2,11 +2,16 @@
 const https = require('https');
 const path = require('path');
 const fs = require('fs');
+const { findApiKey } = require('../config');
 
+// Key: variable de entorno, o la del tab API Keys (match tolerante por nombre:
+// "ElevenLabs", "ElevenLabs Api"…), o el campo legacy elevenLabsApiKey.
 function loadApiKey() {
   if (process.env.ELEVENLABS_API_KEY) return process.env.ELEVENLABS_API_KEY.trim();
   try {
     const cfg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'config.json'), 'utf-8'));
+    const fromList = findApiKey(cfg && cfg.apiKeys, 'elevenlabs');
+    if (fromList && fromList.trim()) return fromList.trim();
     if (cfg && typeof cfg.elevenLabsApiKey === 'string' && cfg.elevenLabsApiKey.trim()) {
       return cfg.elevenLabsApiKey.trim();
     }

@@ -1,0 +1,260 @@
+/* Temas: panel de Settings → Tema y retoques propios de cada tema.
+   Los colores/fuentes/tamaños de cada tema los pone theme.js como variables
+   en <html>; acá va solo lo que no se puede expresar con una variable
+   (bordes gruesos, sombras, brillos), colgado de html[data-theme="…"]. */
+
+/* ── Settings → Tema ──────────────────────────────────────────── */
+.theme-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 8px;
+}
+.theme-card {
+  position: relative;
+  display: flex; flex-direction: column; gap: 4px;
+  padding: 8px;
+  text-align: left;
+  color: var(--text);
+  background: rgba(var(--fg-rgb),0.03);
+  border: 1px solid rgba(var(--fg-rgb),0.08);
+  border-radius: calc(10px * var(--rad));
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s, transform 0.15s;
+}
+.theme-card:hover { border-color: var(--brand-violet-border); transform: translateY(-1px); }
+.theme-card.active {
+  border-color: var(--accent);
+  background: var(--brand-violet-soft);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+.theme-card.active::after {
+  content: '✓';
+  position: absolute; top: 4px; right: 4px;
+  width: 18px; height: 18px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 11px; font-weight: 800;
+  background: var(--accent); color: var(--on-accent);
+}
+.theme-card-name { font-size: calc(13.5px * var(--fs)); font-weight: 700; letter-spacing: 0.3px; }
+.theme-card-desc { font-size: calc(11.5px * var(--fs)); color: var(--text-dim); line-height: 1.35; }
+
+/* Miniatura: va con la paleta del tema que representa (estilos inline), así
+   que sus medidas son fijas y no siguen al tema activo. */
+.theme-swatch {
+  display: flex; flex-direction: column; gap: 5px;
+  padding: 8px; margin-bottom: 2px;
+  border: 1px solid rgba(128,128,128,0.3);
+  overflow: hidden;
+}
+.theme-swatch-title { font-size: 13px; font-weight: 700; line-height: 1.1; white-space: nowrap; }
+.theme-swatch-card { display: flex; flex-direction: column; gap: 4px; padding: 5px; }
+.theme-swatch-bar { height: 5px; border-radius: 3px; }
+.theme-swatch-dots { display: flex; gap: 4px; }
+.theme-swatch-dots i { width: 7px; height: 7px; border-radius: 50%; }
+.theme-swatch-btn { align-self: flex-start; font-size: 10px; font-weight: 600; padding: 2px 8px; line-height: 1.3; }
+
+.theme-custom { display: flex; flex-direction: column; }
+.theme-custom > summary {
+  cursor: pointer;
+  padding: 4px 2px;
+  font-size: calc(13.5px * var(--fs)); font-weight: 600;
+  color: var(--text-muted);
+  transition: color 0.15s;
+}
+.theme-custom > summary:hover, .theme-custom[open] > summary { color: var(--text); }
+.theme-custom[open] > summary { margin-bottom: 8px; }
+.theme-custom > .db-row { margin-top: 10px; }
+
+.theme-sample {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+  padding: 10px;
+  margin-bottom: 10px;
+  border: 1px dashed rgba(var(--fg-rgb),0.14);
+  border-radius: calc(10px * var(--rad));
+}
+.theme-sample-text { font-size: calc(13px * var(--fs)); color: var(--text); margin-left: 4px; }
+
+.theme-groups { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.theme-group {
+  display: flex; flex-direction: column; gap: 6px;
+  padding: 10px 12px;
+  background: rgba(var(--fg-rgb),0.025);
+  border: 1px solid rgba(var(--fg-rgb),0.06);
+  border-radius: calc(10px * var(--rad));
+}
+.theme-group:first-child { grid-row: span 3; }
+.theme-group-title {
+  font-size: calc(11.5px * var(--fs)); font-weight: 700;
+  text-transform: uppercase; letter-spacing: 0.6px;
+  color: var(--accent-text);
+  margin-bottom: 2px;
+}
+.theme-row { display: flex; align-items: center; gap: 8px; min-height: 28px; }
+.theme-row-label { flex: 1; min-width: 0; font-size: calc(13px * var(--fs)); color: var(--text-muted); }
+.theme-row.touched .theme-row-label { color: var(--text); font-weight: 600; }
+.theme-reset {
+  visibility: hidden;
+  width: 22px; height: 22px; flex: 0 0 auto;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(var(--fg-rgb),0.05); border: none;
+  border-radius: calc(6px * var(--rad));
+  color: var(--text-muted); font-size: 13px; cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.theme-row.touched .theme-reset { visibility: visible; }
+.theme-reset:hover { background: rgba(var(--fg-rgb),0.1); color: var(--text); }
+
+.theme-color {
+  appearance: none; -webkit-appearance: none;
+  width: 40px; height: 24px; padding: 0; flex: 0 0 auto;
+  background: none;
+  border: 1px solid rgba(var(--fg-rgb),0.22);
+  border-radius: calc(6px * var(--rad));
+  cursor: pointer;
+}
+.theme-color::-webkit-color-swatch-wrapper { padding: 2px; }
+.theme-color::-webkit-color-swatch { border: none; border-radius: calc(3px * var(--rad)); }
+.theme-color:hover { border-color: var(--brand-focus); }
+
+.theme-range-wrap { display: flex; align-items: center; gap: 8px; }
+.theme-range { width: 130px; accent-color: var(--accent); cursor: pointer; }
+.theme-range-val {
+  width: 42px; text-align: right;
+  font-size: calc(12.5px * var(--fs)); color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+}
+.theme-select { font-size: calc(13px * var(--fs)); padding: 4px 6px; max-width: 180px; }
+
+.theme-seg {
+  display: inline-flex;
+  border: 1px solid rgba(var(--fg-rgb),0.1);
+  border-radius: calc(6px * var(--rad));
+  overflow: hidden;
+}
+.theme-seg-btn {
+  background: none; border: none;
+  padding: 4px 8px;
+  font-size: calc(12px * var(--fs)); font-weight: 600;
+  color: var(--text-dim); cursor: pointer;
+  transition: color 0.15s, background 0.15s;
+}
+.theme-seg-btn:hover { color: var(--text-2); }
+.theme-seg-btn.active { color: var(--text); background: var(--brand-violet-soft); }
+
+/* ── Temas claros (cualquiera con fondo claro, también uno personalizado) ──
+   Los velos translúcidos que en oscuro separan las cajas del fondo casi no se
+   ven sobre claro: las cajas pasan a blanco translúcido con borde más firme. */
+html[data-scheme="light"] .card,
+html[data-scheme="light"] .setting-row,
+html[data-scheme="light"] .setting-block,
+html[data-scheme="light"] .key-card,
+html[data-scheme="light"] .theme-group {
+  background: rgba(255,255,255,0.55);
+  border-color: rgba(var(--fg-rgb),0.14);
+}
+html[data-scheme="light"] .widget { border-color: rgba(var(--fg-rgb),0.18); }
+html[data-scheme="light"] .titlebar-icon { filter: none; }
+html[data-scheme="light"] .clock { text-shadow: none; }
+
+/* ── Terminal ─────────────────────────────────────────────────── */
+html[data-theme="terminal"] .widget { border-color: rgba(var(--accent-rgb),0.4); }
+html[data-theme="terminal"] .card,
+html[data-theme="terminal"] .setting-row,
+html[data-theme="terminal"] .setting-block,
+html[data-theme="terminal"] .key-card {
+  background: rgba(var(--accent-rgb),0.03);
+  border-color: rgba(var(--accent-rgb),0.26);
+}
+html[data-theme="terminal"] .card-title::before { content: '> '; color: var(--accent); }
+html[data-theme="terminal"] .clock {
+  letter-spacing: 4px;
+  filter: drop-shadow(0 0 8px rgba(var(--accent-rgb),0.55));
+}
+html[data-theme="terminal"] .tab.active { color: var(--accent); text-shadow: 0 0 8px rgba(var(--accent-rgb),0.6); }
+html[data-theme="terminal"] .tab.active::after { left: 0; right: 0; box-shadow: 0 0 8px rgba(var(--accent-rgb),0.7); }
+
+/* ── Papel ────────────────────────────────────────────────────── */
+html[data-theme="paper"][data-scheme="light"] .card,
+html[data-theme="paper"][data-scheme="light"] .setting-row,
+html[data-theme="paper"][data-scheme="light"] .setting-block,
+html[data-theme="paper"][data-scheme="light"] .key-card {
+  background: rgba(255,255,255,0.72);
+  border-color: rgba(var(--fg-rgb),0.14);
+  box-shadow: 0 1px 2px rgba(42,37,32,0.08), 0 4px 12px rgba(42,37,32,0.04);
+}
+html[data-theme="paper"] .card-title {
+  text-transform: none; font-variant: small-caps;
+  font-size: calc(15px * var(--fs)); letter-spacing: 1px;
+}
+html[data-theme="paper"] .clock { font-weight: 400; letter-spacing: 1px; }
+html[data-theme="paper"] .tab.active::after { box-shadow: none; height: 2px; }
+
+/* ── Synthwave ────────────────────────────────────────────────── */
+html[data-theme="synthwave"] .widget { border-color: rgba(var(--accent-rgb),0.35); }
+html[data-theme="synthwave"] .card,
+html[data-theme="synthwave"] .setting-row,
+html[data-theme="synthwave"] .setting-block,
+html[data-theme="synthwave"] .key-card {
+  background: rgba(255,255,255,0.035);
+  border-color: rgba(var(--accent-rgb),0.28);
+  box-shadow: 0 0 18px rgba(var(--accent-rgb),0.10), inset 0 0 22px rgba(var(--accent2-rgb),0.04);
+}
+html[data-theme="synthwave"] .card-title {
+  color: var(--accent2);
+  text-shadow: 0 0 10px rgba(var(--accent2-rgb),0.65);
+  letter-spacing: 1.4px;
+}
+html[data-theme="synthwave"] .clock { filter: drop-shadow(0 0 12px rgba(var(--accent-rgb),0.5)); }
+html[data-theme="synthwave"] .tab.active { text-shadow: 0 0 10px rgba(var(--accent-rgb),0.8); }
+
+/* ── Nórdico ──────────────────────────────────────────────────── */
+html[data-theme="nord"] .card,
+html[data-theme="nord"] .setting-row,
+html[data-theme="nord"] .setting-block,
+html[data-theme="nord"] .key-card {
+  background: rgba(var(--fg-rgb),0.065);
+  border-color: transparent;
+}
+html[data-theme="nord"] .card-title { text-transform: none; letter-spacing: 0.2px; font-size: calc(14px * var(--fs)); color: var(--accent); }
+html[data-theme="nord"] .clock { font-weight: 300; text-shadow: none; }
+html[data-theme="nord"] .tab.active::after { box-shadow: none; }
+html[data-theme="nord"] #cpu-arc, html[data-theme="nord"] #ram-arc { filter: none; }
+
+/* ── Brutal ───────────────────────────────────────────────────── */
+html[data-theme="brutal"] .widget { border: 2px solid var(--text); }
+html[data-theme="brutal"] .card,
+html[data-theme="brutal"] .setting-row,
+html[data-theme="brutal"] .setting-block,
+html[data-theme="brutal"] .key-card {
+  border: 2px solid var(--text);
+  box-shadow: 4px 4px 0 var(--text);
+}
+html[data-theme="brutal"][data-scheme="light"] .card,
+html[data-theme="brutal"][data-scheme="light"] .setting-row,
+html[data-theme="brutal"][data-scheme="light"] .setting-block,
+html[data-theme="brutal"][data-scheme="light"] .key-card { background: #fff; }
+html[data-theme="brutal"] .card-title { font-weight: 900; letter-spacing: 1px; }
+html[data-theme="brutal"] .clock { font-weight: 900; letter-spacing: 0; }
+html[data-theme="brutal"] .tabs { border-bottom: 2px solid var(--text); }
+html[data-theme="brutal"] .tab.active { background: var(--text); color: rgb(var(--bg-rgb)); }
+html[data-theme="brutal"] .tab.active::after { display: none; }
+html[data-theme="brutal"] .action-btn,
+html[data-theme="brutal"] .key-add-btn,
+html[data-theme="brutal"] .fin-btn,
+html[data-theme="brutal"] .db-sync-btn { border-width: 2px; border-color: var(--text); }
+html[data-theme="brutal"] .action-btn:hover,
+html[data-theme="brutal"] .key-add-btn:hover,
+html[data-theme="brutal"] .fin-btn:hover { transform: translate(-2px, -2px); }
+html[data-theme="brutal"] .stat-bar { border: 1px solid var(--text); }
+html[data-theme="brutal"] #cpu-arc, html[data-theme="brutal"] #ram-arc { filter: none; }
+
+/* ── Brasa ────────────────────────────────────────────────────── */
+html[data-theme="ember"] .widget { border-color: rgba(var(--accent-rgb),0.22); }
+html[data-theme="ember"] .card,
+html[data-theme="ember"] .setting-row,
+html[data-theme="ember"] .setting-block,
+html[data-theme="ember"] .key-card {
+  background: linear-gradient(160deg, rgba(var(--accent-rgb),0.07), rgba(var(--accent2-rgb),0.02));
+  border-color: rgba(var(--accent2-rgb),0.14);
+}
+html[data-theme="ember"] .card-title { color: var(--accent2); }

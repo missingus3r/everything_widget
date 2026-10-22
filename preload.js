@@ -16,6 +16,8 @@ contextBridge.exposeInMainWorld('api', {
 
   getAutoLaunch: () => ipcRenderer.invoke('get-auto-launch'),
   setAutoLaunch: (enabled) => ipcRenderer.invoke('set-auto-launch', enabled),
+  getAlwaysOnTop: () => ipcRenderer.invoke('get-always-on-top'),
+  setAlwaysOnTop: (enabled) => ipcRenderer.invoke('set-always-on-top', enabled),
 
   sendUsage:       (data) => ipcRenderer.send('usage-updated',        data),
   sendCodexUsage:  (data) => ipcRenderer.send('codex-usage-updated',  data),
@@ -73,7 +75,7 @@ contextBridge.exposeInMainWorld('api', {
     ids:    ()      => ipcRenderer.invoke('favs:ids'),
     list:   ()      => ipcRenderer.invoke('favs:list'),
     add:    (movie) => ipcRenderer.invoke('favs:add', movie),
-    remove: (id)    => ipcRenderer.invoke('favs:remove', id),
+    remove: (key)   => ipcRenderer.invoke('favs:remove', key),   // key = { id, imdb } (o solo el id)
     folders:      ()                => ipcRenderer.invoke('favs:folders'),
     createFolder: (name, parentId)  => ipcRenderer.invoke('favs:folder-create', { name, parentId }),
     renameFolder: (id, name)        => ipcRenderer.invoke('favs:folder-rename', { id, name }),
@@ -101,6 +103,12 @@ contextBridge.exposeInMainWorld('api', {
 
   tmdb: {
     tv: (imdbNum) => ipcRenderer.invoke('tmdb:tv', imdbNum),
+  },
+
+  // Ficha extendida de película (reparto + sinopsis + similares) por imdb id
+  // o tmdb id: YIFY primero, TMDB si YIFY no la tiene. Para las de LimeTorrents.
+  movies: {
+    ficha: (params) => ipcRenderer.invoke('movies:ficha', params),
   },
 
   reddit: {

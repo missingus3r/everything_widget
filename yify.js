@@ -124,4 +124,17 @@ async function fetchYifySuggestions(movieId) {
   return { movies: (data.data.movies || []).map(normalizeMovie) };
 }
 
-module.exports = { checkYify, fetchYifyMovies, fetchYifyDetails, fetchYifySuggestions };
+// Película por código IMDb ("tt0111161"): list_movies acepta el tt… como
+// query_term y matchea por imdb_code. Devuelve la película normalizada o null
+// si YIFY no la tiene (la ficha de una película de LimeTorrents se completa
+// con esto). Tira si la API falla — el caller distingue "no está" de "caída".
+async function fetchYifyByImdb(imdb) {
+  const code = String(imdb || '').trim().toLowerCase();
+  if (!/^tt\d+$/.test(code)) return null;
+  const data = await getJson(`${YIFY_BASE}?query_term=${code}&limit=5`);
+  if (!data || data.status !== 'ok' || !data.data) throw new Error('respuesta inesperada');
+  const hit = (data.data.movies || []).find((m) => String(m.imdb_code || '').toLowerCase() === code);
+  return hit ? normalizeMovie(hit) : null;
+}
+
+module.exports = { checkYify, fetchYifyMovies, fetchYifyDetails, fetchYifySuggestions, fetchYifyByImdb };

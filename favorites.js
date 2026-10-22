@@ -8,11 +8,17 @@
 // ($setOnInsert) y se baja la copia autoritativa de Mongo al espejo SQLite.
 // Las lecturas salen siempre de SQLite (instantáneas, funcionan sin red).
 // Reusa la conexión de finances/mongo.js (misma base, colección `favorites`).
+//
+// Una película es UN favorito aunque esté en YIFY y en LimeTorrents con ids
+// distintos: se unen por imdb (columna `imdb`). El ♥ desde cualquiera de las
+// dos fuentes cae en el mismo registro, y sus torrents llevan el origen de
+// cada uno (`source` en cada torrent) para que la ficha muestre ambos. El
+// cruce con la otra fuente (archivos locales / API) lo hace favSources.js.
 
-const fs = require('fs');
 const path = require('path');
 const https = require('https');
 const mongo = require('./finances/mongo');
+const sqliteFile = require('./sqliteFile');
 
 const DB_PATH = path.join(__dirname, 'favorites.sqlite');
 const WASM_PATH = path.join(__dirname, 'node_modules', 'sql.js', 'dist');
@@ -26,6 +32,7 @@ const SCHEMA = `
   CREATE TABLE IF NOT EXISTS favorites (
     id        INTEGER PRIMARY KEY,        -- id de YIFY, o negativo para LimeTorrents (= _id en Mongo)
     source    TEXT,                       -- 'yify' | 'lime' (NULL = yify, favoritos viejos)
+    imdb      TEXT,                       -- ttNNNNNNN en minúscula: une la misma película entre YIFY y Lime
     title     TEXT    NOT NULL,
     year      INTEGER,
     rating    REAL,
@@ -72,17 +79,22 @@ const SCHEMA = `
 
 let readyPromise = null;
 function ensure() {
-  if (!readyPromise) readyPromise = (async () => {
-    const initSqlJs = require('sql.js');
-    const SQL = await initSqlJs({ locateFile: (f) => path.join(WASM_PATH, f) });
-    db = fs.existsSync(DB_PATH)
-      ? new SQL.Database(fs.readFileSync(DB_PATH))
-      : new SQL.Database();
-    db.run(SCHEMA);
-    migrate();
-    persist();
-    await reconcile();   // nunca tira: sin Mongo queda SQLite-only
-  })();
+  if (!readyPromise) {
+    const p = readyPromise = (async () => {
+      const initSqlJs = require('sql.js');
+      const SQL = await initSqlJs({ locateFile: (f) => path.join(WASM_PATH, f) });
+      // Un archivo dañado (p. ej. en cero tras un apagado inesperado) se aparta
+      // y se arranca de cero: reconcile() lo vuelve a llenar desde Mongo.
+      db = sqliteFile.openDatabase(SQL, DB_PATH);
+      db.run(SCHEMA);
+      migrate();
+      persist();
+      await reconcile();   // nunca tira: sin Mongo queda SQLite-only
+    })();
+    // Un fallo al abrir no queda cacheado para toda la sesión: la próxima
+    // llamada reintenta en vez de dejar la sección vacía en silencio.
+    p.catch(() => { if (readyPromise === p) readyPromise = null; });
+  }
   return readyPromise;
 }
 
@@ -95,11 +107,14 @@ function migrate() {
   };
   if (!colsOf('favorites').includes('folder_id')) db.run('ALTER TABLE favorites ADD COLUMN folder_id INTEGER');
   if (!colsOf('favorites').includes('source')) db.run('ALTER TABLE favorites ADD COLUMN source TEXT');
+  if (!colsOf('favorites').includes('imdb')) db.run('ALTER TABLE favorites ADD COLUMN imdb TEXT');
   if (!colsOf('fav_folders').includes('parent_id')) db.run('ALTER TABLE fav_folders ADD COLUMN parent_id INTEGER');
+  db.run('CREATE INDEX IF NOT EXISTS idx_fav_imdb ON favorites(imdb)');
 }
 
+// Volcado atómico (tmp + fsync + rename): nunca deja el archivo a medias.
 function persist() {
-  if (db) fs.writeFileSync(DB_PATH, Buffer.from(db.export()));
+  if (db) sqliteFile.writeAtomicSync(DB_PATH, Buffer.from(db.export()));
 }
 
 async function favCols() {
@@ -130,37 +145,89 @@ function toBuf(v) {
   return null;
 }
 
+// Código IMDb normalizado ("tt0076759") de una película o favorito, o null.
+// Sale de `imdb` (YIFY y grupos de Lime) o, en favoritos viejos de Lime que
+// solo guardaron la URL, de esa URL.
+function imdbOf(m) {
+  if (!m) return null;
+  const direct = String(m.imdb || '').trim().toLowerCase();
+  if (/^tt\d+$/.test(direct)) return direct;
+  const mm = /imdb\.com\/title\/(tt\d+)/i.exec(`${m.imdbUrl || ''} ${m.url || ''}`);
+  return mm ? mm[1].toLowerCase() : null;
+}
+
+const SOURCE_ORDER = ['yify', 'lime'];
+
+// Cada torrent lleva su origen; los guardados antes de existir el campo
+// heredan el del favorito.
+function tagTorrents(list, source) {
+  const def = source === 'lime' ? 'lime' : 'yify';
+  return (Array.isArray(list) ? list : [])
+    .filter((t) => t && typeof t === 'object')
+    .map((t) => ({ ...t, source: SOURCE_ORDER.includes(t.source) ? t.source : def }));
+}
+
+// Orígenes presentes en un favorito (el principal + los de sus torrents).
+function sourcesOf(f) {
+  const s = new Set([f.source === 'lime' ? 'lime' : 'yify']);
+  for (const t of f.torrents || []) if (t && t.source) s.add(t.source);
+  return SOURCE_ORDER.filter((x) => s.has(x));
+}
+
+// Une torrents por origen: los de `fresh` reemplazan a los de `base` del
+// mismo origen; los otros orígenes de `base` quedan. Sin repetidos (mismo
+// magnet/hash) y ordenados YIFY → Lime.
+function overlayTorrents(base, fresh) {
+  const inc = Array.isArray(fresh) ? fresh : [];
+  const srcs = new Set(inc.map((t) => t.source));
+  const all = [...(base || []).filter((t) => t && !srcs.has(t.source)), ...inc];
+  const seen = new Set();
+  const out = [];
+  for (const t of all) {
+    const key = `${t.source}|${t.magnet || t.hash || t.url || `${t.quality}|${t.size}`}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(t);
+  }
+  return out.sort((a, b) => SOURCE_ORDER.indexOf(a.source) - SOURCE_ORDER.indexOf(b.source));
+}
+
+// Primer valor "con contenido" (ni null, ni '', ni array vacío).
+const first = (...vals) => vals.find((v) => v != null && v !== '' && !(Array.isArray(v) && !v.length)) ?? null;
+
 function rowToFav(r) {
+  const source = r.source === 'lime' ? 'lime' : 'yify';
   return {
-    id: r.id, source: r.source === 'lime' ? 'lime' : 'yify', title: r.title,
+    id: r.id, source, imdb: r.imdb || null, title: r.title,
     year: r.year ?? null, rating: r.rating ?? null, runtime: r.runtime ?? null,
     genres: parse(r.genres, []), synopsis: r.synopsis || '',
     trailer: r.trailer || null, url: r.url || null,
     coverUrl: r.cover_url || null, cover: toBuf(r.cover), coverMime: r.cover_mime || null,
-    cast: parse(r.cast, []), torrents: parse(r.torrents, []),
+    cast: parse(r.cast, []), torrents: tagTorrents(parse(r.torrents, []), source),
     folderId: r.folder_id ?? null,
     addedAt: r.added_at,
   };
 }
 
 function docToFav(d) {
+  const source = d.source === 'lime' ? 'lime' : 'yify';
   return {
-    id: Number(d._id), source: d.source === 'lime' ? 'lime' : 'yify', title: d.title,
+    id: Number(d._id), source, imdb: d.imdb || null, title: d.title,
     year: d.year ?? null, rating: d.rating ?? null, runtime: d.runtime ?? null,
     genres: Array.isArray(d.genres) ? d.genres : [], synopsis: d.synopsis || '',
     trailer: d.trailer || null, url: d.url || null,
     coverUrl: d.cover_url || null, cover: toBuf(d.cover), coverMime: d.cover_mime || null,
-    cast: Array.isArray(d.cast) ? d.cast : [], torrents: Array.isArray(d.torrents) ? d.torrents : [],
+    cast: Array.isArray(d.cast) ? d.cast : [], torrents: tagTorrents(d.torrents, source),
     folderId: d.folder_id ?? null,
     addedAt: d.added_at || Date.now(),
   };
 }
 
 // Doc Mongo: arrays como arrays de verdad y la portada como BSON Binary
-// (el driver serializa el Buffer solo). _id = id de YIFY.
+// (el driver serializa el Buffer solo). _id = id de YIFY (o el negativo de Lime).
 function favToDoc(f) {
   return {
-    _id: f.id, source: f.source || 'yify', title: f.title,
+    _id: f.id, source: f.source || 'yify', imdb: f.imdb || null, title: f.title,
     year: f.year, rating: f.rating, runtime: f.runtime,
     genres: f.genres, synopsis: f.synopsis,
     trailer: f.trailer, url: f.url,
@@ -174,10 +241,10 @@ function favToDoc(f) {
 function writeRow(f) {
   db.run(
     'INSERT OR REPLACE INTO favorites ' +
-    '(id, source, title, year, rating, runtime, genres, synopsis, trailer, url, cover_url, cover, cover_mime, cast, torrents, folder_id, added_at) ' +
-    'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    '(id, source, imdb, title, year, rating, runtime, genres, synopsis, trailer, url, cover_url, cover, cover_mime, cast, torrents, folder_id, added_at) ' +
+    'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
     [
-      Number(f.id), f.source || 'yify', String(f.title),
+      Number(f.id), f.source || 'yify', f.imdb || null, String(f.title),
       f.year == null ? null : Number(f.year),
       f.rating == null ? null : Number(f.rating),
       f.runtime == null ? null : Number(f.runtime),
@@ -189,6 +256,23 @@ function writeRow(f) {
       Number(f.addedAt),
     ]
   );
+}
+
+function findById(id) {
+  const stmt = db.prepare('SELECT * FROM favorites WHERE id = ?');
+  stmt.bind([Number(id)]);
+  const f = stmt.step() ? rowToFav(stmt.getAsObject()) : null;
+  stmt.free();
+  return f;
+}
+
+function findByImdb(imdb) {
+  if (!imdb) return null;
+  const stmt = db.prepare('SELECT * FROM favorites WHERE imdb = ? ORDER BY added_at ASC');
+  stmt.bind([String(imdb)]);
+  const f = stmt.step() ? rowToFav(stmt.getAsObject()) : null;
+  stmt.free();
+  return f;
 }
 
 function readRows() {
@@ -323,7 +407,14 @@ async function reconcile() {
     db.run('BEGIN TRANSACTION');
     try {
       folderDocs.forEach((d) => writeFolderRow(docToFolder(d)));
-      movieDocs.forEach((d) => writeRow(docToFav(d)));
+      // Un doc remoto sin imdb (guardado antes de la columna) no borra el
+      // que ya se completó acá.
+      const localImdb = new Map(readRows().map((f) => [f.id, f.imdb]));
+      movieDocs.forEach((d) => {
+        const f = docToFav(d);
+        if (!f.imdb) f.imdb = localImdb.get(f.id) || null;
+        writeRow(f);
+      });
       seriesDocs.forEach((d) => writeSeriesRow(docToSfav(d)));
       // Referencias a carpetas que no existen en el conjunto final (local ∪
       // remoto) vuelven a la raíz — evita huérfanos sin borrar películas.
@@ -374,29 +465,21 @@ function getBytes(url, timeoutMs = 15000, redirects = 3) {
 // ── API pública ──────────────────────────────────────────────────────────────
 
 // Guarda (o re-guarda) un favorito. `movie` es el objeto normalizado de yify.js
-// — idealmente el de movie_details (sinopsis completa + cast); el handler IPC
-// se encarga de enriquecerlo si la API responde. La portada se baja acá.
+// o un grupo de limetorrents.js — idealmente ya enriquecido (ficha completa y
+// torrents de la otra fuente, ver favSources.complement); la portada se baja
+// acá. Si la misma película ya está guardada (mismo id, o mismo imdb desde la
+// otra fuente) se funde en ese registro en vez de duplicarse: conserva id,
+// carpeta y fecha; los torrents se unen por origen.
 async function add(movie) {
   await ensure();
   if (!movie || !movie.id || !movie.title) throw new Error('película inválida');
+  const source = movie.source === 'lime' ? 'lime' : 'yify';
+  const imdb = imdbOf(movie);
+  const existing = findById(Number(movie.id)) || findByImdb(imdb);
+  const sameId = !!existing && existing.id === Number(movie.id);
 
-  let cover = null, coverMime = null;
-  const coverUrl = (movie.cover && /^https?:\/\//i.test(movie.cover)) ? movie.cover : null;
-  if (coverUrl) {
-    try {
-      const img = await getBytes(coverUrl);
-      if (img.buf.length > 0 && img.buf.length < 3 * 1024 * 1024) {
-        cover = img.buf;
-        coverMime = img.mime;
-      }
-    } catch {} // sin imagen: el favorito igual se guarda
-  }
-
-  // Re-guardar un favorito no debe sacarlo de su carpeta: si ya existe,
-  // conservamos su folder_id salvo que el caller pida uno explícito.
-  const fav = {
-    id: Number(movie.id),
-    source: movie.source === 'lime' ? 'lime' : 'yify',
+  const incoming = {
+    id: Number(movie.id), source, imdb,
     title: String(movie.title),
     year: movie.year == null ? null : Number(movie.year),
     rating: movie.rating == null ? null : Number(movie.rating),
@@ -404,11 +487,47 @@ async function add(movie) {
     genres: Array.isArray(movie.genres) ? movie.genres : [],
     synopsis: movie.synopsis || '',
     trailer: movie.trailer || null, url: movie.url || null,
-    coverUrl, cover, coverMime,
+    coverUrl: (movie.cover && /^https?:\/\//i.test(movie.cover)) ? movie.cover : null,
+    cover: null, coverMime: null,
     cast: Array.isArray(movie.cast) ? movie.cast : [],
-    torrents: Array.isArray(movie.torrents) ? movie.torrents : [],
-    folderId: movie.folderId != null ? Number(movie.folderId) : currentFolderId(Number(movie.id)),
-    addedAt: Date.now(),
+    torrents: tagTorrents(movie.torrents, source),
+  };
+
+  // Portada: la ya guardada sirve; si no hay, se baja la de la película.
+  let cover = existing ? existing.cover : null;
+  let coverMime = existing ? existing.coverMime : null;
+  if (!cover && incoming.coverUrl) {
+    try {
+      const img = await getBytes(incoming.coverUrl);
+      if (img.buf.length > 0 && img.buf.length < 3 * 1024 * 1024) {
+        cover = img.buf;
+        coverMime = img.mime;
+      }
+    } catch {} // sin imagen: el favorito igual se guarda
+  }
+
+  // Re-guardar con el mismo id refresca la ficha; fundir por imdb desde la
+  // otra fuente respeta la ficha que ya estaba y solo completa huecos.
+  const primary = (!existing || sameId) ? incoming : existing;
+  const filler = (!existing || sameId) ? (existing || {}) : incoming;
+  const fav = {
+    id: existing ? existing.id : incoming.id,
+    source: existing ? existing.source : source,
+    imdb: imdb || (existing && existing.imdb) || null,
+    title: first(primary.title, filler.title),
+    year: first(primary.year, filler.year),
+    rating: first(primary.rating, filler.rating),
+    runtime: first(primary.runtime, filler.runtime),
+    genres: first(primary.genres, filler.genres) || [],
+    synopsis: first(primary.synopsis, filler.synopsis) || '',
+    trailer: first(primary.trailer, filler.trailer),
+    url: first(primary.url, filler.url),
+    coverUrl: first(existing && existing.cover ? existing.coverUrl : null, incoming.coverUrl, existing && existing.coverUrl),
+    cover, coverMime,
+    cast: first(primary.cast, filler.cast) || [],
+    torrents: existing ? overlayTorrents(existing.torrents, incoming.torrents) : incoming.torrents,
+    folderId: movie.folderId != null ? Number(movie.folderId) : (existing ? existing.folderId : null),
+    addedAt: existing ? existing.addedAt : Date.now(),
   };
 
   writeRow(fav);
@@ -417,35 +536,56 @@ async function add(movie) {
     const cols = await favCols();
     if (cols) await cols.movies.updateOne({ _id: fav.id }, { $set: favToDoc(fav) }, { upsert: true });
   } catch (e) { console.warn('[favorites] mongo upsert failed:', e.message); }
+  // Si además había otro registro con el mismo imdb (duplicado viejo), se funde ya.
+  if (fav.imdb) await dedupeByImdb(fav.imdb);
+  return { id: fav.id };
 }
 
-async function remove(movieId) {
+// Quita la película de favoritos. `key` es el id o `{ id, imdb }`: el ♥ puede
+// apretarse desde la otra fuente (otro id) y el favorito se reconoce por imdb.
+async function remove(key) {
   await ensure();
-  db.run('DELETE FROM favorites WHERE id = ?', [Number(movieId)]);
+  const isObj = key && typeof key === 'object';
+  const id = Number(isObj ? key.id : key);
+  const imdb = isObj ? imdbOf(key) : null;
+  const ids = new Set();
+  if (Number.isFinite(id)) ids.add(id);
+  const stmt = db.prepare('SELECT id FROM favorites WHERE imdb = ?');
+  stmt.bind([imdb || '']);
+  while (stmt.step()) ids.add(stmt.getAsObject().id);
+  stmt.free();
+  for (const x of ids) db.run('DELETE FROM favorites WHERE id = ?', [x]);
   persist();
   try {
     const cols = await favCols();
-    if (cols) await cols.movies.deleteOne({ _id: Number(movieId) });
+    if (cols && ids.size) await cols.movies.deleteMany({ _id: { $in: [...ids] } });
   } catch (e) { console.warn('[favorites] mongo delete failed:', e.message); }
 }
 
-// Solo los ids — el renderer los usa para pintar los corazones.
-async function getIds() {
+// Ids e imdb ids de los favoritos — el renderer pinta los corazones con ambos
+// (el imdb hace que el ♥ se vea en YIFY y en Lime a la vez).
+async function getKeys() {
   await ensure();
-  const stmt = db.prepare('SELECT id FROM favorites');
-  const ids = [];
-  while (stmt.step()) ids.push(stmt.getAsObject().id);
+  const stmt = db.prepare('SELECT id, imdb FROM favorites');
+  const ids = [], imdbs = [];
+  while (stmt.step()) {
+    const r = stmt.getAsObject();
+    ids.push(r.id);
+    if (r.imdb) imdbs.push(r.imdb);
+  }
   stmt.free();
-  return ids;
+  return { ids, imdbs };
 }
 
 // Listado completo (espejo local, más reciente primero) en la misma forma
 // normalizada que yify.js para que el renderer reuse sus vistas tal cual.
 // La portada sale del BLOB como data URL; si no se pudo bajar, queda la URL.
+// `sources` dice de qué fuentes hay torrents (YIFY, Lime o ambas).
 async function list() {
   await ensure();
   return readRows().map((f) => ({
-    id: f.id, source: f.source, title: f.title, year: f.year, rating: f.rating, runtime: f.runtime,
+    id: f.id, source: f.source, sources: sourcesOf(f), imdb: f.imdb,
+    title: f.title, year: f.year, rating: f.rating, runtime: f.runtime,
     genres: f.genres, synopsis: f.synopsis, trailer: f.trailer, url: f.url,
     cover: f.cover
       ? `data:${f.coverMime || 'image/jpeg'};base64,${f.cover.toString('base64')}`
@@ -456,16 +596,86 @@ async function list() {
   }));
 }
 
-// ── Carpetas: API pública ────────────────────────────────────────────────────
-// El folder_id que ya tiene un favorito (o null). Lo usa add() para no sacar
-// una película de su carpeta al re-guardarla.
-function currentFolderId(movieId) {
-  const stmt = db.prepare('SELECT folder_id FROM favorites WHERE id = ?');
-  stmt.bind([Number(movieId)]);
-  const id = stmt.step() ? (stmt.getAsObject().folder_id ?? null) : null;
-  stmt.free();
-  return id;
+// Listado sin portadas (para las pasadas de mantenimiento de favSources.js).
+async function listLite() {
+  await ensure();
+  return readRows().map(({ cover, coverMime, ...f }) => ({ ...f, hasCover: !!cover }));
 }
+
+// Actualiza campos sueltos de un favorito (imdb, torrents, ficha) en las dos
+// bases. Los torrents se reemplazan tal cual vienen (el caller los une con
+// overlayTorrents). La portada no se toca ni se resube.
+async function patch(id, changes) {
+  await ensure();
+  const cur = findById(id);
+  if (!cur) return null;
+  const fav = { ...cur, ...changes, id: cur.id, cover: cur.cover, coverMime: cur.coverMime };
+  if ('torrents' in changes) fav.torrents = tagTorrents(changes.torrents, fav.source);
+  writeRow(fav);
+  persist();
+  try {
+    const cols = await favCols();
+    if (cols) {
+      const doc = favToDoc(fav);
+      delete doc._id; delete doc.cover; delete doc.cover_mime;
+      await cols.movies.updateOne({ _id: fav.id }, { $set: doc });
+    }
+  } catch (e) { console.warn('[favorites] mongo patch failed:', e.message); }
+  return fav;
+}
+
+// Funde favoritos repetidos (la misma película guardada desde YIFY y desde
+// Lime con ids distintos, antes de que existiera la unión por imdb). Manda el
+// de YIFY (ficha completa); entre iguales, el más antiguo. Se unen los
+// torrents por origen, se conserva la carpeta del que la tuviera y el sobrante
+// se borra en las dos bases. `onlyImdb` limita la pasada a una película.
+async function dedupeByImdb(onlyImdb = null) {
+  await ensure();
+  const groups = new Map();
+  for (const f of readRows()) {
+    if (!f.imdb || (onlyImdb && f.imdb !== onlyImdb)) continue;
+    if (!groups.has(f.imdb)) groups.set(f.imdb, []);
+    groups.get(f.imdb).push(f);
+  }
+  const removed = [];
+  const kept = [];
+  for (const favs of groups.values()) {
+    if (favs.length < 2) continue;
+    favs.sort((a, b) => (a.source === 'yify' ? 0 : 1) - (b.source === 'yify' ? 0 : 1) || a.addedAt - b.addedAt);
+    let fav = favs[0];
+    for (const r of favs.slice(1)) {
+      fav = {
+        ...fav,
+        title: first(fav.title, r.title), year: first(fav.year, r.year),
+        rating: first(fav.rating, r.rating), runtime: first(fav.runtime, r.runtime),
+        genres: first(fav.genres, r.genres) || [], synopsis: first(fav.synopsis, r.synopsis) || '',
+        trailer: first(fav.trailer, r.trailer), url: first(fav.url, r.url),
+        coverUrl: fav.cover ? fav.coverUrl : first(r.coverUrl, fav.coverUrl),
+        cover: fav.cover || r.cover, coverMime: fav.cover ? fav.coverMime : r.coverMime,
+        cast: first(fav.cast, r.cast) || [],
+        torrents: overlayTorrents(r.torrents, fav.torrents),
+        folderId: fav.folderId ?? r.folderId ?? null,
+        addedAt: Math.min(fav.addedAt, r.addedAt),
+      };
+      db.run('DELETE FROM favorites WHERE id = ?', [r.id]);
+      removed.push(r.id);
+    }
+    writeRow(fav);
+    kept.push(fav);
+  }
+  if (!removed.length) return { merged: 0, removed: 0 };
+  persist();
+  try {
+    const cols = await favCols();
+    if (cols) {
+      for (const fav of kept) await cols.movies.updateOne({ _id: fav.id }, { $set: favToDoc(fav) }, { upsert: true });
+      await cols.movies.deleteMany({ _id: { $in: removed } });
+    }
+  } catch (e) { console.warn('[favorites] mongo dedupe failed:', e.message); }
+  return { merged: kept.length, removed: removed.length };
+}
+
+// ── Carpetas: API pública ────────────────────────────────────────────────────
 
 async function listFolders() {
   await ensure();
@@ -624,7 +834,8 @@ async function syncNow() {
 }
 
 module.exports = {
-  add, remove, getIds, list,
+  add, remove, getKeys, list, listLite, patch, dedupeByImdb,
+  imdbOf, tagTorrents, overlayTorrents,
   listFolders, createFolder, renameFolder, deleteFolder, moveToFolder,
   addSeries, removeSeries, getSeriesIds, listSeries,
   syncNow,

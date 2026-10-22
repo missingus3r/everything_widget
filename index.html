@@ -3,8 +3,10 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Nexus</title>
+  <title>Control Center</title>
   <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="theme.css">
+  <script src="theme.js"></script>
 </head>
 <body>
   <div class="widget">
@@ -14,7 +16,7 @@
     <div class="titlebar">
       <div class="titlebar-left">
         <span class="titlebar-icon">🖥</span>
-        <span class="titlebar-text">Nexus</span>
+        <span class="titlebar-text">Control Center</span>
       </div>
       <div class="titlebar-controls">
         <button class="btn-min" id="btn-min" title="Minimizar">─</button>
@@ -49,6 +51,7 @@
 
       <!-- Weather -->
       <section class="card weather-card">
+        <div class="wx-fx" id="weather-fx" aria-hidden="true"></div>
         <div class="card-head">
           <span class="card-title">Clima</span>
           <span class="card-head-right">
@@ -74,9 +77,9 @@
               <svg viewBox="0 0 100 100" class="gauge-svg">
                 <defs>
                   <linearGradient id="cpuGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-                    <stop offset="0%" stop-color="#7c3aed"></stop>
-                    <stop offset="60%" stop-color="#a855f7"></stop>
-                    <stop offset="100%" stop-color="#c084fc"></stop>
+                    <stop offset="0%" style="stop-color: var(--accent-deep)"></stop>
+                    <stop offset="60%" style="stop-color: var(--accent)"></stop>
+                    <stop offset="100%" style="stop-color: var(--accent-light)"></stop>
                   </linearGradient>
                 </defs>
                 <circle class="gauge-track" cx="50" cy="50" r="42"></circle>
@@ -94,9 +97,9 @@
               <svg viewBox="0 0 100 100" class="gauge-svg">
                 <defs>
                   <linearGradient id="ramGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-                    <stop offset="0%" stop-color="#0ea5e9"></stop>
-                    <stop offset="60%" stop-color="#22d3ee"></stop>
-                    <stop offset="100%" stop-color="#67e8f9"></stop>
+                    <stop offset="0%" style="stop-color: var(--accent2-deep)"></stop>
+                    <stop offset="60%" style="stop-color: var(--accent2)"></stop>
+                    <stop offset="100%" style="stop-color: var(--accent2-light)"></stop>
                   </linearGradient>
                 </defs>
                 <circle class="gauge-track" cx="50" cy="50" r="42"></circle>
@@ -419,6 +422,7 @@
       <div class="tab-toolbar" id="films-toolbar">
         <div class="yify-search-row">
           <input id="yify-search" class="fin-input" placeholder="Buscar por título, actor o director… (Enter)" autocomplete="off">
+          <button id="yify-search-clear" class="fin-btn" type="button" title="Limpiar búsqueda" aria-label="Limpiar búsqueda de films">✕</button>
           <div class="yify-view-toggle" id="yify-view-toggle">
             <button class="yify-view-btn" data-view="grid" title="Vista tarjetas">▦</button>
             <button class="yify-view-btn" data-view="icons" title="Vista iconos pequeños">▩</button>
@@ -534,6 +538,7 @@
       <div class="tab-toolbar" id="series-toolbar">
         <div class="yify-search-row">
           <input id="ez-search" class="fin-input" placeholder="Buscar serie por nombre… (Enter)" autocomplete="off">
+          <button id="ez-search-clear" class="fin-btn" type="button" title="Limpiar búsqueda" aria-label="Limpiar búsqueda de series">✕</button>
           <div class="yify-view-toggle" id="ez-view-toggle">
             <button class="yify-view-btn" data-view="grid" title="Vista tarjetas">▦</button>
             <button class="yify-view-btn" data-view="icons" title="Vista iconos pequeños">▩</button>
@@ -591,6 +596,7 @@
       <div class="tab-toolbar" id="juegos-toolbar">
         <div class="yify-search-row">
           <input id="gd-search" class="fin-input" placeholder="Buscar juego por título… (Enter)" autocomplete="off">
+          <button id="gd-search-clear" class="fin-btn" type="button" title="Limpiar búsqueda" aria-label="Limpiar búsqueda de juegos">✕</button>
           <div class="yify-view-toggle" id="gd-view-toggle">
             <button class="yify-view-btn" data-view="grid" title="Vista tarjetas">▦</button>
             <button class="yify-view-btn" data-view="icons" title="Vista iconos pequeños">▩</button>
@@ -735,12 +741,15 @@
           <div class="key-add-title">Agregar key</div>
           <input id="key-name" class="key-input" placeholder="Nombre (ej. ElevenLabs)" autocomplete="off">
           <input id="key-value" class="key-input" type="password" placeholder="API key" autocomplete="off">
+          <input id="key-url" class="key-input" placeholder="Link (opcional, ej. dashboard del servicio)" autocomplete="off" spellcheck="false">
           <button id="key-add-btn" class="key-add-btn">+ Agregar</button>
           <div class="key-status" id="key-status"></div>
           <div class="key-hint">
             Tip: los nombres conectan servicios del widget — <code>ElevenLabs</code> (uso en el
             dashboard), <code>GitHub</code> (token personal, tab GitHub), <code>TMDB</code>
-            (fichas de series) y <code>Finnhub</code> (acciones y ETFs en Mercado).
+            (o "The Movie Database": fichas de series; y reparto, sinopsis y similares de las
+            películas de LimeTorrents que YIFY no tiene) y <code>Finnhub</code> (acciones y ETFs
+            en Mercado). Mayúsculas, espacios y sufijos como "API" no importan.
           </div>
         </div>
       </div>
@@ -756,6 +765,33 @@
           </span>
         </label>
         <div class="setting-status" id="setting-status"></div>
+
+        <label class="setting-row" for="setting-alwaysontop">
+          <input type="checkbox" id="setting-alwaysontop" class="setting-checkbox">
+          <span class="setting-text">
+            <span class="setting-label">Siempre adelante</span>
+            <span class="setting-desc">Mantiene el widget por encima de todas las ventanas. Apagado, se comporta como cualquier app: podés taparlo con otra y volver a traerlo desde el ícono de la bandeja.</span>
+          </span>
+        </label>
+
+        <label class="setting-row" for="setting-baranim">
+          <input type="checkbox" id="setting-baranim" class="setting-checkbox">
+          <span class="setting-text">
+            <span class="setting-label">Animar barras</span>
+            <span class="setting-desc">Anima las barras de uso y de previsión de AI Usage: el brillo y las rayas corren más rápido cuanto más alto es el uso o el ritmo de gasto, y las barras en zona roja o en riesgo laten de color.</span>
+          </span>
+        </label>
+
+        <label class="setting-row" for="setting-wxanim">
+          <input type="checkbox" id="setting-wxanim" class="setting-checkbox">
+          <span class="setting-text">
+            <span class="setting-label">Animar clima</span>
+            <span class="setting-desc">Anima el fondo de la card de Clima según el tiempo actual: lluvia (más densa e inclinada con el viento), ráfagas de viento o sol.</span>
+          </span>
+        </label>
+
+        <!-- Tema: lo arma theme.js (tarjetas de temas + personalización). -->
+        <div class="setting-block" id="theme-block"></div>
 
         <div class="setting-block">
           <div class="setting-text">
@@ -790,6 +826,7 @@
   </div>
 
   <script src="vendor/hls.min.js"></script>
+  <script src="aiForecast.js"></script>
   <script src="renderer.js"></script>
 </body>
 </html>

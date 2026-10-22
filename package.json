@@ -1,8 +1,8 @@
 {
   "name": "nexus-widget",
-  "productName": "Nexus",
+  "productName": "Control Center",
   "version": "1.0.0",
-  "description": "Nexus — floating desktop dashboard: clock, weather, CPU/RAM/disk/net, speedtest, markets, finances, AI usage and YIFY torrents, all on one screen.",
+  "description": "Control Center — floating desktop dashboard: clock, weather, CPU/RAM/disk/net, speedtest, markets, finances, AI usage and YIFY torrents, all on one screen.",
   "main": "main.js",
   "scripts": {
     "start": "electron ."

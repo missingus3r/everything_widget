@@ -1,12 +1,13 @@
 // SQLite persistence for balance snapshots, backed by sql.js (WASM).
 //
 // sql.js keeps the whole database in memory; we persist by writing the exported
-// byte buffer to finances.sqlite after every mutation. The data set here is tiny
+// byte buffer to finances.sqlite after every mutation (atomically — tmp + fsync
+// + rename, see ../sqliteFile.js). The data set here is tiny
 // (a handful of accounts × snapshots over time), so this is more than fast enough
 // and avoids any native build step on Windows.
 
-const fs = require('fs');
 const path = require('path');
+const sqliteFile = require('../sqliteFile');
 
 const DB_PATH = path.join(__dirname, '..', 'finances.sqlite');
 const WASM_PATH = path.join(__dirname, '..', 'node_modules', 'sql.js', 'dist');
@@ -62,11 +63,9 @@ async function init() {
   if (db) return;
   const initSqlJs = require('sql.js');
   SQL = await initSqlJs({ locateFile: (f) => path.join(WASM_PATH, f) });
-  if (fs.existsSync(DB_PATH)) {
-    db = new SQL.Database(fs.readFileSync(DB_PATH));
-  } else {
-    db = new SQL.Database();
-  }
+  // A damaged file (e.g. zero-filled after an unclean shutdown) is set aside
+  // and we start empty: the startup sync refills the mirror from Mongo.
+  db = sqliteFile.openDatabase(SQL, DB_PATH);
   db.run(SCHEMA);
   migrate();
   save();
@@ -74,7 +73,7 @@ async function init() {
 
 function save() {
   if (!db) return;
-  fs.writeFileSync(DB_PATH, Buffer.from(db.export()));
+  sqliteFile.writeAtomicSync(DB_PATH, Buffer.from(db.export()));
 }
 
 // Insert a balance snapshot. uyu/usd may be null when not applicable.

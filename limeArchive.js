@@ -14,9 +14,9 @@
 // arrancar vacía. Incremental por added_at (con margen) para no mover todo
 // el archivo en cada pasada.
 
-const fs = require('fs');
 const path = require('path');
 const mongo = require('./finances/mongo');
+const sqliteFile = require('./sqliteFile');
 
 const DB_PATH = path.join(__dirname, 'lime.sqlite');
 const WASM_PATH = path.join(__dirname, 'node_modules', 'sql.js', 'dist');
@@ -50,24 +50,30 @@ const SCHEMA = `
   );
   CREATE INDEX IF NOT EXISTS idx_lime_cat_rel ON lime_releases(cat, released_at DESC);
   CREATE INDEX IF NOT EXISTS idx_lime_added ON lime_releases(added_at);
+  CREATE INDEX IF NOT EXISTS idx_lime_imdb ON lime_releases(imdb);
 `;
 
 let readyPromise = null;
 function ensure() {
-  if (!readyPromise) readyPromise = (async () => {
-    const initSqlJs = require('sql.js');
-    const SQL = await initSqlJs({ locateFile: (f) => path.join(WASM_PATH, f) });
-    db = fs.existsSync(DB_PATH)
-      ? new SQL.Database(fs.readFileSync(DB_PATH))
-      : new SQL.Database();
-    db.run(SCHEMA);
-    persist();
-  })();
+  if (!readyPromise) {
+    const p = readyPromise = (async () => {
+      const initSqlJs = require('sql.js');
+      const SQL = await initSqlJs({ locateFile: (f) => path.join(WASM_PATH, f) });
+      // Un archivo dañado (p. ej. en cero tras un apagado inesperado) se aparta
+      // y se arranca de cero: el sync con Mongo vuelve a bajar todo.
+      db = sqliteFile.openDatabase(SQL, DB_PATH);
+      db.run(SCHEMA);
+      persist();
+    })();
+    // Un fallo al abrir no queda cacheado para toda la sesión.
+    p.catch(() => { if (readyPromise === p) readyPromise = null; });
+  }
   return readyPromise;
 }
 
+// Volcado atómico (tmp + fsync + rename): nunca deja el archivo a medias.
 function persist() {
-  if (db) fs.writeFileSync(DB_PATH, Buffer.from(db.export()));
+  if (db) sqliteFile.writeAtomicSync(DB_PATH, Buffer.from(db.export()));
 }
 
 async function col() {
@@ -220,6 +226,21 @@ async function list(cat, limit = 0) {
   return rows;
 }
 
+// Releases archivados de una película por su ficha de IMDb (cruce con un
+// favorito de YIFY de la misma película). Más reciente primero.
+async function byImdb(imdb, cat = 'movies') {
+  await ensure();
+  const code = String(imdb || '').trim().toLowerCase();
+  if (!/^tt\d+$/.test(code)) return [];
+  const stmt = db.prepare(
+    'SELECT * FROM lime_releases WHERE cat = ? AND imdb = ? ORDER BY released_at DESC, id DESC');
+  stmt.bind([String(cat), code]);
+  const rows = [];
+  while (stmt.step()) rows.push(rowToRelease(stmt.getAsObject()));
+  stmt.free();
+  return rows;
+}
+
 async function count(cat) {
   await ensure();
   const stmt = db.prepare('SELECT COUNT(*) AS n FROM lime_releases WHERE cat = ?');
@@ -297,4 +318,4 @@ async function syncNow() {
   }
 }
 
-module.exports = { ingest, existingIds, rowsByIds, list, count, syncNow };
+module.exports = { ingest, existingIds, rowsByIds, list, byImdb, count, syncNow };

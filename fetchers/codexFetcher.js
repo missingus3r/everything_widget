@@ -64,7 +64,32 @@ function parseStatus(raw) {
   const mdl = clean.match(/Model\s*:?\s*([^\s│()]+)\s+\(([^)]+)\)/i);
   if (mdl) data.model = { name: mdl[1].trim(), detail: mdl[2].trim() };
 
+  // /status didn't print a Model line → fall back to the configured default.
+  const cfg = readConfigModel();
+  if (!data.model && cfg) data.model = cfg;
+  if (data.model && !data.model.effort) {
+    const eff = (data.model.detail || '').match(/reasoning\s+(\w+)/i);
+    data.model.effort = eff ? eff[1] : (cfg?.effort || null);
+  }
+
   return (data.session5h || data.weekly) ? data : null;
+}
+
+// Top-level `model` / `model_reasoning_effort` keys of ~/.codex/config.toml
+// (only the part before the first [table], so profile overrides don't leak in).
+function readConfigModel() {
+  let head;
+  try {
+    head = fs.readFileSync(path.join(os.homedir(), '.codex', 'config.toml'), 'utf-8').split(/^\s*\[/m)[0];
+  } catch {
+    return null;
+  }
+  const key = (k) => {
+    const m = head.match(new RegExp(`^\\s*${k}\\s*=\\s*["']([^"']+)["']`, 'm'));
+    return m ? m[1] : null;
+  };
+  const name = key('model');
+  return name ? { name, effort: key('model_reasoning_effort') } : null;
 }
 
 async function main() {

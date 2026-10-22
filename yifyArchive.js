@@ -59,6 +59,7 @@ const movies = store.table({
     'CREATE INDEX IF NOT EXISTS idx_yify_seeds ON yify_movies(seeds DESC);',
     'CREATE INDEX IF NOT EXISTS idx_yify_title ON yify_movies(title COLLATE NOCASE);',
     'CREATE INDEX IF NOT EXISTS idx_yify_added ON yify_movies(added_at);',
+    'CREATE INDEX IF NOT EXISTS idx_yify_imdb ON yify_movies(imdb);',
   ],
 });
 
@@ -181,6 +182,17 @@ async function byId(id) {
   return r ? toMovie(r) : null;
 }
 
+// Película por código IMDb ("tt0111161"). Cruce offline entre una película de
+// LimeTorrents (match de IMDb) y el catálogo archivado de YIFY: resuelve el id
+// de YIFY sin red y, con la API caída, al menos aporta la sinopsis guardada.
+async function byImdb(imdb) {
+  await store.ensure();
+  const code = String(imdb || '').trim().toLowerCase();
+  if (!/^tt\d+$/.test(code)) return null;
+  const r = movies.one('SELECT * FROM yify_movies WHERE imdb = ? COLLATE NOCASE', [code]);
+  return r ? toMovie(r) : null;
+}
+
 // Total archivado (el contador del pager cuando no hay filtros).
 async function count() {
   await store.ensure();
@@ -188,7 +200,7 @@ async function count() {
 }
 
 module.exports = {
-  ingest, list, byId, count,
+  ingest, list, byId, byImdb, count,
   ensure: store.ensure,
   flush: store.flush,
   getState: store.getState,

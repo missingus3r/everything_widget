@@ -75,8 +75,10 @@ async function fetchAirQuality(latitude, longitude) {
 async function fetchWeather({ latitude, longitude, label }) {
   const url = `https://api.open-meteo.com/v1/forecast?latitude=${latitude}&longitude=${longitude}` +
     `&current=temperature_2m,apparent_temperature,relative_humidity_2m,weather_code,wind_speed_10m,is_day` +
+    `,precipitation,cloud_cover,pressure_msl,wind_direction_10m,wind_gusts_10m,dew_point_2m,visibility` +
     `&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,sunrise,sunset` +
-    `&timezone=auto&forecast_days=2`;
+    `,precipitation_sum,wind_speed_10m_max,wind_gusts_10m_max,wind_direction_10m_dominant,uv_index_max` +
+    `&timezone=auto&forecast_days=7`;
 
   const [data, air] = await Promise.all([
     getJson(url),
@@ -97,12 +99,18 @@ async function fetchWeather({ latitude, longitude, label }) {
   const day = (i) => {
     const [emoji, lbl] = describe(d.weather_code?.[i]);
     return {
+      date: d.time?.[i],
       code: d.weather_code?.[i],
       emoji,
       label: lbl,
       max: d.temperature_2m_max?.[i],
       min: d.temperature_2m_min?.[i],
       rainPct: d.precipitation_probability_max?.[i],
+      rainMm: d.precipitation_sum?.[i],
+      windMax: d.wind_speed_10m_max?.[i],
+      gustMax: d.wind_gusts_10m_max?.[i],
+      windDir: d.wind_direction_10m_dominant?.[i],
+      uvMax: d.uv_index_max?.[i],
       sunrise: d.sunrise?.[i],
       sunset: d.sunset?.[i],
       sunriseMs: toMs(d.sunrise?.[i]),
@@ -117,6 +125,13 @@ async function fetchWeather({ latitude, longitude, label }) {
       feels: cur.apparent_temperature,
       humidity: cur.relative_humidity_2m,
       wind: cur.wind_speed_10m,
+      windDir: cur.wind_direction_10m,
+      gusts: cur.wind_gusts_10m,
+      precip: cur.precipitation,
+      clouds: cur.cloud_cover,
+      pressure: cur.pressure_msl,
+      dewPoint: cur.dew_point_2m,
+      visibility: cur.visibility,
       isDay: cur.is_day === 1,
       code: cur.weather_code,
       emoji: curEmoji,
@@ -124,6 +139,8 @@ async function fetchWeather({ latitude, longitude, label }) {
     },
     today: day(0),
     tomorrow: day(1),
+    // Semana completa para el modal de detalle (hoy incluido).
+    days: (d.time || []).map((_, i) => day(i)),
     air,
     fetchedAt: Date.now(),
   };

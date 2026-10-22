@@ -194,6 +194,42 @@ function parseUsage(raw) {
   return (data.session || data.weekAll || data.extra) ? data : null;
 }
 
+// Default model = what a fresh `claude` session starts with: ANTHROPIC_MODEL wins
+// over the `model` key in ~/.claude/settings.json. Neither set → the plan default.
+function readDefaultModel(raw) {
+  let settings = {};
+  try {
+    settings = JSON.parse(fs.readFileSync(path.join(os.homedir(), '.claude', 'settings.json'), 'utf-8'));
+  } catch {}
+  const name = displayModel(process.env.ANTHROPIC_MODEL || settings.model || null, raw);
+  const effort = capitalize(settings.effortLevel || null);
+  return (name || effort) ? { name, effort } : null;
+}
+
+const capitalize = (s) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s);
+
+// "opus" → "Opus 5.5". The setting is usually a bare alias, so the version comes
+// from a full id when there is one ("claude-opus-5-5") or else from the welcome
+// banner the pty session printed ("Opus 5.5 · Claude Max").
+function displayModel(name, raw) {
+  const id = String(name || '').match(/(opus|sonnet|haiku|fable)(?:-(\d{1,2})(?!\d)(?:-(\d{1,2})(?!\d))?)?/i);
+  if (name && !id) return name;
+  let family = id ? id[1] : null;
+  let version = id && id[2] ? [id[2], id[3]].filter(Boolean).join('.') : null;
+  if (!version) {
+    const seen = stripAnsi(raw || '').match(new RegExp(`\\b(${family || 'opus|sonnet|haiku|fable'})\\s+(\\d+(?:\\.\\d+)?)`, 'i'));
+    if (seen) { family = seen[1]; version = seen[2]; }
+  }
+  if (!family) return null;
+  return [capitalize(family.toLowerCase()), version].filter(Boolean).join(' ');
+}
+
+function withModel(data, raw) {
+  if (!data) return data;
+  const model = readDefaultModel(raw);
+  return model ? { ...data, model } : data;
+}
+
 async function main() {
   const claudePath = findClaude();
   if (!claudePath) {
@@ -229,7 +265,7 @@ async function main() {
       proc.write('/exit\r');
       setTimeout(() => {
         try { proc.kill(); } catch {}
-        process.stdout.write(JSON.stringify(data || { error: 'parse failed' }));
+        process.stdout.write(JSON.stringify(withModel(data, output) || { error: 'parse failed' }));
         process.exit(0);
       }, 2000);
     }, 1000);
@@ -238,7 +274,7 @@ async function main() {
   setTimeout(() => {
     try { proc.kill(); } catch {}
     const data = parseUsage(output);
-    process.stdout.write(JSON.stringify(data || { error: 'timeout' }));
+    process.stdout.write(JSON.stringify(withModel(data, output) || { error: 'timeout' }));
     process.exit(0);
   }, 35000);
 }

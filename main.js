@@ -4,7 +4,11 @@ const fs = require('fs');
 const zlib = require('zlib');
 const { spawn } = require('child_process');
 
-const { loadConfig, saveConfig } = require('./config');
+// La app se llamaba Nexus: el perfil (localStorage con tema, previsión de IA y
+// toggles) sigue en %APPDATA%\Nexus para no perderlo con el cambio de nombre.
+app.setPath('userData', path.join(app.getPath('appData'), 'Nexus'));
+
+const { loadConfig, saveConfig, findApiKey } = require('./config');
 const systemStats = require('./systemStats');
 const { fetchWeather } = require('./weather');
 const { fetchMarkets } = require('./markets');
@@ -12,7 +16,7 @@ const { runSpeedtest } = require('./speedtest');
 const speedtestHistory = require('./speedtestHistory');
 const { readLocalUsage } = require('./localUsage');
 const finances = require('./finances');
-const { checkYify, fetchYifyMovies, fetchYifyDetails, fetchYifySuggestions } = require('./yify');
+const { checkYify, fetchYifyMovies, fetchYifyDetails, fetchYifySuggestions, fetchYifyByImdb } = require('./yify');
 const { checkLime, fetchLimeMovies, fetchLimeTvShows, fetchLimeGameGroups, searchLime } = require('./limetorrents');
 const limeArchive = require('./limeArchive');
 const streaming = require('./streaming');
@@ -27,6 +31,7 @@ const eztvArchive = require('./eztvArchive');
 const gamesArchive = require('./gamesArchive');
 const archiveCrawl = require('./archiveCrawl');
 const favorites = require('./favorites');
+const favSources = require('./favSources');
 const { listApiDefs, checkApis } = require('./apiStatus');
 const { fetchUpcoming } = require('./tvmaze');
 const { fetchRedditPosts } = require('./reddit');
@@ -34,15 +39,14 @@ const { fetchNews } = require('./news');
 const { fetchHolidays } = require('./holidays');
 const { fetchDeals } = require('./games');
 const { fetchGithub } = require('./github');
-const { fetchTvByImdb } = require('./tmdb');
+const { fetchTvByImdb, fetchMovieByImdb, fetchMovieByTmdbId } = require('./tmdb');
 const { fetchQuotes, DEFAULT_SYMBOLS } = require('./stocks');
 
-// Key guardada en API Keys por nombre (case-insensitive): GitHub, TMDB, Finnhub…
+// Key guardada en API Keys por nombre: GitHub, TMDB, Finnhub, ElevenLabs… El
+// match es tolerante (alias y variantes como "ElevenLabs Api" o "The Movie
+// Database"): ver findApiKey en config.js.
 function getApiKey(name) {
-  const cfg = loadConfig();
-  const list = Array.isArray(cfg.apiKeys) ? cfg.apiKeys : [];
-  const hit = list.find((k) => (k.name || '').toLowerCase() === String(name).toLowerCase());
-  return (hit && hit.key) || '';
+  return findApiKey(loadConfig().apiKeys, name);
 }
 
 let win = null;
@@ -273,7 +277,7 @@ function updateTray() {
 
   tray.setImage(nativeImage.createFromBuffer(buildTrayIcon(s ?? null, w ?? null)));
 
-  const tipLines = ['Nexus'];
+  const tipLines = ['Control Center'];
   tipLines.push('— Claude —');
   tipLines.push(s != null ? `Session: ${s}%` : 'Session: —');
   tipLines.push(w != null ? `Week (all): ${w}%` : 'Week (all): —');
@@ -312,6 +316,8 @@ function updateTray() {
     { type: 'separator' },
     { label: 'Show widget', click: () => showWindow() },
     { label: 'Refresh now', click: () => { if (win) win.webContents.send('trigger-refresh'); } },
+    { label: 'Always on top', type: 'checkbox', checked: !!loadConfig().alwaysOnTop,
+      click: (item) => setAlwaysOnTop(item.checked) },
     { type: 'separator' },
     { label: 'Quit', click: () => {
         isQuitting = true;
@@ -325,7 +331,7 @@ function updateTray() {
 
 function createTray() {
   tray = new Tray(nativeImage.createFromBuffer(buildTrayIcon(null, null)));
-  tray.setToolTip('Nexus — loading…');
+  tray.setToolTip('Control Center — loading…');
   tray.on('click', () => {
     if (!win) { createWindow(); return; }
     if (win.isVisible()) win.hide(); else showWindow();
@@ -336,7 +342,8 @@ function createTray() {
 // ── Window ─────────────────────────────────────────────────────
 function createWindow() {
   const { width: screenW } = screen.getPrimaryDisplay().workAreaSize;
-  zoom = clampZoom(loadConfig().widgetZoom);
+  const cfg = loadConfig();
+  zoom = clampZoom(cfg.widgetZoom);
   const initialW = Math.round(BASE_WIDTH * zoom);
   const initialH = Math.round(lastContentHeight * zoom);
   win = new BrowserWindow({
@@ -348,7 +355,9 @@ function createWindow() {
     show: !startHidden,
     frame: false,
     transparent: true,
-    alwaysOnTop: true,
+    // Por defecto NO queda siempre adelante (se puede tapar con otras apps);
+    // es un toggle en Settings y en el menú de la bandeja (config.alwaysOnTop).
+    alwaysOnTop: !!cfg.alwaysOnTop,
     resizable: true,
     minWidth: Math.round(BASE_WIDTH * MIN_ZOOM),
     maxWidth: Math.round(BASE_WIDTH * MAX_ZOOM),
@@ -362,6 +371,7 @@ function createWindow() {
     },
   });
   win.setAspectRatio(initialW / initialH);
+  if (cfg.alwaysOnTop) applyAlwaysOnTop(true);   // mismo nivel que el toggle (ver applyAlwaysOnTop)
   win.loadFile('index.html');
   win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
   // setZoomFactor resets on every load, so (re)apply it once the page is ready.
@@ -464,6 +474,66 @@ ipcMain.handle('yify:details', async (_e, movieId) => {
 ipcMain.handle('yify:suggestions', async (_e, movieId) => {
   try {
     return await fetchYifySuggestions(movieId);
+  } catch (e) {
+    return { error: String(e && e.message || e) };
+  }
+});
+
+// ── Ficha extendida de película (LimeTorrents) ─────────────────
+// El RSS de Lime no trae reparto, sinopsis ni sugerencias: con el imdb id del
+// match se completa la ficha para que el modal quede como el de YIFY.
+//   1. YIFY por código IMDb (el id sale del archivo si está; si no, del
+//      mirror): movie_details (cast + sinopsis) + movie_suggestions. Es la
+//      misma info que la ficha de YIFY y las sugerencias abren esa ficha.
+//   2. Si YIFY no la tiene (o está caído), TMDB con la key de API Keys:
+//      sinopsis en español, reparto y similares (tmdbId → se resuelven al
+//      click). Sin key, con el mirror caído y la película archivada, al menos
+//      va la sinopsis del archivo.
+// También resuelve un tmdbId (click en una similar de TMDB): la ficha de TMDB
+// trae el imdb id y con él se intenta YIFY, para caer en la ficha completa.
+// Nunca tira: degrada a { error }.
+ipcMain.handle('movies:ficha', async (_e, params) => {
+  const p = params || {};
+  const key = getApiKey('TMDB');
+  let imdb = String(p.imdb || '').trim().toLowerCase() || null;
+  let tmdbFicha = null;
+  try {
+    if (!imdb && p.tmdbId) {
+      if (!key) return { error: 'sin key de TMDB' };
+      tmdbFicha = await fetchMovieByTmdbId(key, p.tmdbId);
+      if (tmdbFicha && tmdbFicha.error) return tmdbFicha;
+      imdb = tmdbFicha.imdb ? tmdbFicha.imdb.toLowerCase() : null;
+    }
+    let archived = null;
+    if (imdb) {
+      try { archived = await yifyArchive.byImdb(imdb); } catch {}
+      try {
+        const base = archived || await fetchYifyByImdb(imdb);
+        if (base && base.id) {
+          const [det, sug] = await Promise.all([
+            fetchYifyDetails(base.id),
+            fetchYifySuggestions(base.id).catch(() => ({ movies: [] })),
+          ]);
+          yifyArchive.ingest([det]).catch(() => {});
+          return {
+            ...det,
+            source: 'yify',
+            suggestions: (sug.movies || []).map((m) => ({ ...m, src: 'yify' })),
+          };
+        }
+      } catch {
+        // Mirror caído: sigue TMDB (si hay key) y, como último recurso, lo
+        // archivado (sinopsis sin cast).
+      }
+    }
+    if (key && imdb && !tmdbFicha) {
+      try { tmdbFicha = await fetchMovieByImdb(key, imdb); }
+      catch (e) { tmdbFicha = { error: String(e && e.message || e) }; }
+    }
+    if (tmdbFicha && !tmdbFicha.error) return tmdbFicha;
+    if (archived) return { ...archived, source: 'yify', suggestions: [], stale: true };
+    if (tmdbFicha) return tmdbFicha;
+    return { error: !imdb ? 'sin imdb id' : key ? 'sin ficha' : 'no está en YIFY; una key "TMDB" en API Keys completa estas fichas' };
   } catch (e) {
     return { error: String(e && e.message || e) };
   }
@@ -730,8 +800,8 @@ ipcMain.handle('stocks:set-symbols', (_e, symbols) => {
 // Al agregar se intenta enriquecer con movie_details (sinopsis completa +
 // cast); si la API no responde se guarda lo que el renderer ya tenía.
 ipcMain.handle('favs:ids', async () => {
-  try { return await favorites.getIds(); }
-  catch { return []; }
+  try { return await favorites.getKeys(); }
+  catch { return { ids: [], imdbs: [] }; }
 });
 ipcMain.handle('favs:list', async () => {
   try { return await favorites.list(); }
@@ -746,8 +816,12 @@ ipcMain.handle('favs:add', async (_e, movie) => {
     if (movie.source !== 'lime') {
       try { full = { ...movie, ...(await fetchYifyDetails(movie.id)) }; } catch {}
     }
-    await favorites.add(full);
-    return { ok: true };
+    // La misma película puede estar en la otra fuente: se guardan también sus
+    // torrents (y, para Lime, la ficha de YIFY) así la ficha en Favoritos
+    // muestra los dos orígenes. Best-effort.
+    try { full = await favSources.complement(full); } catch {}
+    const saved = await favorites.add(full);
+    return { ok: true, id: saved.id };
   } catch (e) {
     return { error: String(e && e.message || e) };
   }
@@ -818,10 +892,13 @@ ipcMain.on('codex-usage-updated',  (_e, data) => { latestCodex  = data; updateTr
 ipcMain.on('eleven-usage-updated', (_e, data) => { latestEleven = data; updateTray(); });
 
 // ── API keys ───────────────────────────────────────────────────
+// La key de ElevenLabs se busca con el mismo match tolerante que el resto
+// ("ElevenLabs Api" también vale); el campo legacy elevenLabsApiKey se
+// mantiene espejado para el fetcher standalone y configs viejas.
 ipcMain.handle('get-api-keys', () => {
   const cfg = loadConfig();
   const list = Array.isArray(cfg.apiKeys) ? cfg.apiKeys.slice() : [];
-  if (cfg.elevenLabsApiKey && !list.some(k => (k.name || '').toLowerCase() === 'elevenlabs')) {
+  if (cfg.elevenLabsApiKey && !findApiKey(list, 'elevenlabs')) {
     list.unshift({ id: 'elevenlabs-legacy', name: 'ElevenLabs', key: cfg.elevenLabsApiKey });
   }
   return list;
@@ -830,8 +907,8 @@ ipcMain.handle('save-api-keys', (_event, keys) => {
   const list = Array.isArray(keys) ? keys.filter(k => k && k.name && k.key) : [];
   const cfg = loadConfig();
   const patch = { apiKeys: list };
-  const eleven = list.find(k => (k.name || '').toLowerCase() === 'elevenlabs');
-  if (eleven) patch.elevenLabsApiKey = eleven.key;
+  const eleven = findApiKey(list, 'elevenlabs');
+  if (eleven) patch.elevenLabsApiKey = eleven;
   else if (cfg.elevenLabsApiKey) patch.elevenLabsApiKey = '';
   saveConfig(patch);
   return list;
@@ -874,6 +951,9 @@ async function syncDatabases() {
       eztvArchive.syncNow().catch(() => {}),
       gamesArchive.syncNow().catch(() => {}),
     ]);
+    // Favoritos: imdb faltante, duplicados YIFY/Lime y torrents de la otra
+    // fuente (usa los archivos recién sincronizados). Nunca tira.
+    await favSources.refreshAll();
   } finally {
     dbSyncRunning = false;
   }
@@ -918,6 +998,41 @@ ipcMain.handle('set-auto-launch', (_event, enabled) => {
     return !!app.getLoginItemSettings(loginItemOptions()).openAtLogin;
   } catch { return false; }
 });
+
+// "Siempre adelante": persiste en config y se aplica en caliente a la ventana.
+// Lo cambian el toggle de Settings y el ítem del menú de la bandeja.
+// Nivel 'screen-saver' a propósito: con el nivel por defecto ('floating')
+// Electron en Windows, después de marcar la ventana TOPMOST, la reubica
+// detrás de la barra de tareas (SetWindowPos con la barra como insertAfter) y
+// si la barra en ese momento no es topmost la ventana pierde el flag — en la
+// práctica el toggle "no hacía nada". 'screen-saver' no pasa por ese paso.
+// Además, en Windows el PRIMER SetWindowPos(HWND_TOPMOST) después del arranque
+// a veces no prende el flag (el siguiente sí — reproducido con el toggle de
+// Settings): se verifica con isAlwaysOnTop() y, si no quedó, se alterna y se
+// vuelve a aplicar.
+function applyAlwaysOnTop(on) {
+  if (!win) return false;
+  const set = (v) => {
+    try { win.setAlwaysOnTop(v, 'screen-saver'); }
+    catch (e) { console.error('[window] setAlwaysOnTop', e && e.message); }
+  };
+  set(on);
+  if (win.isAlwaysOnTop() !== on) {
+    set(!on);
+    set(on);
+    console.warn('[window] alwaysOnTop', on, 'reintentado →', win.isAlwaysOnTop());
+  }
+  return win.isAlwaysOnTop() === on;
+}
+function setAlwaysOnTop(enabled) {
+  const on = !!enabled;
+  saveConfig({ alwaysOnTop: on });
+  applyAlwaysOnTop(on);
+  updateTray();   // refleja el check del menú
+  return on;
+}
+ipcMain.handle('get-always-on-top', () => !!loadConfig().alwaysOnTop);
+ipcMain.handle('set-always-on-top', (_event, enabled) => setAlwaysOnTop(enabled));
 
 ipcMain.on('window-minimize', () => { if (win) win.hide(); });
 ipcMain.on('window-maximize', () => toggleMaximize());

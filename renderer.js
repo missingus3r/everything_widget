@@ -46,6 +46,18 @@ function debounce(fn, wait = 350) {
   };
 }
 
+// Limpiar los buscadores del tab usando su misma ruta de filtrado en vivo.
+['yify', 'ez', 'gd'].forEach((prefix) => {
+  const input = $(`${prefix}-search`);
+  const clear = $(`${prefix}-search-clear`);
+  if (!input || !clear) return;
+  clear.addEventListener('click', () => {
+    input.value = '';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.focus();
+  });
+});
+
 document.getElementById('btn-min').addEventListener('click', () => window.api.minimize());
 document.getElementById('btn-max').addEventListener('click', () => window.api.maximize());
 document.getElementById('btn-close').addEventListener('click', () => window.api.close());
@@ -178,9 +190,9 @@ function barClassPct(pct) {
 }
 
 function pctColor(pct) {
-  if (pct >= 85) return '#ef4444';
-  if (pct >= 65) return '#facc15';
-  return '#4ade80';
+  if (pct >= 85) return 'var(--danger)';
+  if (pct >= 65) return 'var(--warn)';
+  return 'var(--ok)';
 }
 
 function setBar(fillEl, valEl, pct, valText) {
@@ -332,10 +344,46 @@ function scheduleDayNightRender(w) {
     Math.min(next - t + 1000, 0x7fffffff));
 }
 
+// Fondo animado de la card según el tiempo actual. Prioridad: lluvia (códigos
+// WMO de llovizna, lluvia, chaparrones y tormenta) → viento (≥ 20 km/h o
+// ráfagas ≥ 40) → sol (despejado de día). Nublado, nieve, niebla y noche: nada.
+function weatherFx(c, isDay) {
+  const code = c.code;
+  const wind = c.wind || 0;
+  if ((code >= 51 && code <= 67) || (code >= 80 && code <= 82) || code >= 95) {
+    const heavy = code === 65 || code === 67 || code === 82 || code >= 95;
+    return { kind: 'rain', count: heavy ? 44 : (code <= 57 ? 16 : 28), slant: Math.min(25, Math.round(wind / 2)) };
+  }
+  if (wind >= 20 || (c.gusts || 0) >= 40) {
+    // Segundos que tarda una ráfaga en cruzar la card: más viento, más rápido.
+    return { kind: 'wind', count: wind >= 40 ? 14 : 10, speed: Math.min(3, Math.max(0.8, 60 / Math.max(wind, 20))) };
+  }
+  if (isDay && code <= 1) return { kind: 'sun' };
+  return null;
+}
+
+function renderWeatherFx(c, isDay) {
+  const el = $('weather-fx');
+  if (!el) return;
+  const fx = weatherFx(c || {}, isDay);
+  const key = fx ? JSON.stringify(fx) : '';
+  if (el.dataset.key === key) return;   // mismo efecto: no reiniciar la animación
+  el.dataset.key = key;
+  el.className = 'wx-fx' + (fx ? ` ${fx.kind}` : '');
+  el.style.setProperty('--wx-slant', fx?.slant || 0);
+  const rnd = (min, max) => (min + Math.random() * (max - min)).toFixed(2);
+  const particle = {
+    rain: () => `<i style="left:${rnd(0, 100)}%;animation-duration:${rnd(0.6, 1.1)}s;animation-delay:-${rnd(0, 1.1)}s;opacity:${rnd(0.4, 1)}"></i>`,
+    wind: () => `<i style="top:${rnd(6, 94)}%;--w:${rnd(30, 70)}px;animation-duration:${rnd(fx.speed * 0.8, fx.speed * 1.4)}s;animation-delay:-${rnd(0, fx.speed * 1.4)}s"></i>`,
+  }[fx?.kind];
+  el.innerHTML = particle ? Array.from({ length: fx.count }, particle).join('') : '';
+}
+
 function renderWeather(w) {
   const grid = $('weather-grid');
   if (!w || w.error) {
     grid.innerHTML = `<div class="weather-loading">Clima no disponible</div>`;
+    renderWeatherFx(null);
     return;
   }
   $('weather-loc').textContent = w.location || '';
@@ -363,7 +411,7 @@ function renderWeather(w) {
       <div class="weather-icon">${today.emoji || '•'}</div>
       <div class="weather-info">
         <div class="weather-when">Hoy</div>
-        <div class="weather-temp">${fmtTemp(today.max)}<span style="font-size:60%;color:#71717a"> / ${fmtTemp(today.min)}</span></div>
+        <div class="weather-temp">${fmtTemp(today.max)}<span style="font-size:60%;color:var(--text-dim)"> / ${fmtTemp(today.min)}</span></div>
         <div class="weather-detail">Lluvia <b>${today.rainPct != null ? today.rainPct + '%' : '—'}</b></div>
       </div>
     </div>
@@ -371,13 +419,15 @@ function renderWeather(w) {
       <div class="weather-icon">${tom.emoji || '•'}</div>
       <div class="weather-info">
         <div class="weather-when">Mañana</div>
-        <div class="weather-temp">${fmtTemp(tom.max)}<span style="font-size:60%;color:#71717a"> / ${fmtTemp(tom.min)}</span></div>
+        <div class="weather-temp">${fmtTemp(tom.max)}<span style="font-size:60%;color:var(--text-dim)"> / ${fmtTemp(tom.min)}</span></div>
         <div class="weather-detail">Lluvia <b>${tom.rainPct != null ? tom.rainPct + '%' : '—'}</b></div>
       </div>
     </div>
   `;
+  renderWeatherFx(c, isDay);
   scheduleDayNightRender(w);
   adjustWindowSize();
+  if (wxModalEl) renderWxModal();
 }
 
 function fmtTemp(t) {
@@ -437,6 +487,144 @@ async function refreshWeather() {
 }
 
 $('weather-refresh').addEventListener('click', refreshWeather);
+
+// ── Modal de clima: detalle de ahora + pronóstico de la semana ──
+// Se abre al hacer click en la card. Usa el mismo weatherData del dashboard
+// (sin fetch propio) y se re-dibuja si llega un refresco con el modal abierto.
+let wxModalEl = null;
+const WX_DIRS = ['N', 'NE', 'E', 'SE', 'S', 'SO', 'O', 'NO'];
+const WX_DOW = ['dom', 'lun', 'mar', 'mié', 'jue', 'vie', 'sáb'];
+
+function wxDir(deg) {
+  return deg == null || !isFinite(deg) ? '' : WX_DIRS[Math.round(deg / 45) % 8];
+}
+function wxNum(v, unit, digits = 0) {
+  if (v == null || !isFinite(v)) return '—';
+  const f = 10 ** digits;
+  return `${Math.round(v * f) / f}${unit}`;
+}
+// "2026-10-05T06:15" (hora local del lugar) → "06:15"
+function wxClock(s) {
+  return typeof s === 'string' && s.length >= 16 ? s.slice(11, 16) : '—';
+}
+function wxDayName(d, i) {
+  if (i === 0) return 'Hoy';
+  if (i === 1) return 'Mañana';
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(d.date || '');
+  if (!m) return '—';
+  return `${WX_DOW[new Date(+m[1], +m[2] - 1, +m[3]).getDay()]} ${+m[3]}`;
+}
+
+function renderWxModal() {
+  if (!wxModalEl) return;
+  const body = wxModalEl.querySelector('.js-wx-body');
+  const w = weatherData;
+  if (!w || w.error) {
+    body.innerHTML = '<div class="weather-loading">Clima no disponible</div>';
+    return;
+  }
+  wxModalEl.querySelector('.js-wx-loc').textContent = w.location ? ` · ${w.location}` : '';
+  const c = w.current || {};
+  const today = w.today || {};
+  const air = w.air || {};
+  const days = Array.isArray(w.days) && w.days.length ? w.days : [w.today, w.tomorrow].filter(Boolean);
+
+  const tiles = [
+    ['Humedad', wxNum(c.humidity, '%')],
+    ['Viento', `${wxNum(c.wind, ' km/h')} ${wxDir(c.windDir)}`],
+    ['Ráfagas', wxNum(c.gusts, ' km/h')],
+    ['Presión', wxNum(c.pressure, ' hPa')],
+    ['Nubosidad', wxNum(c.clouds, '%')],
+    ['Precipitación', wxNum(c.precip, ' mm', 1)],
+    ['Punto de rocío', fmtTemp(c.dewPoint)],
+    ['Visibilidad', c.visibility != null ? wxNum(c.visibility / 1000, ' km', 1) : '—'],
+  ];
+  if (air.uv != null) {
+    const [label, cls] = uvBand(air.uv);
+    tiles.push(['UV', `<span class="air-${cls}">${wxNum(air.uv, '', 1)} ${label}</span>`]);
+  }
+  if (air.aqi != null) {
+    const [label, cls] = aqiBand(air.aqi);
+    tiles.push(['Aire (US AQI)', `<span class="air-${cls}">${air.aqi} ${label}</span>`]);
+  }
+  if (air.pm25 != null) tiles.push(['PM2.5', wxNum(air.pm25, ' µg/m³', 1)]);
+  if (air.pm10 != null) tiles.push(['PM10', wxNum(air.pm10, ' µg/m³', 1)]);
+  tiles.push(['Amanecer', wxClock(today.sunrise)], ['Atardecer', wxClock(today.sunset)]);
+
+  // Barra min–max de cada día, posicionada sobre el rango de toda la semana.
+  const mins = days.map((d) => d.min).filter((v) => v != null && isFinite(v));
+  const maxs = days.map((d) => d.max).filter((v) => v != null && isFinite(v));
+  const lo = mins.length ? Math.min(...mins) : 0;
+  const hi = maxs.length ? Math.max(...maxs) : 0;
+  const span = hi - lo || 1;
+
+  body.innerHTML = `
+    <div class="weather-cell now wx-now">
+      <div class="weather-icon">${weatherIconHtml(c, isDayNow(w))}</div>
+      <div class="weather-info">
+        <div class="weather-when">Ahora · ${escapeHtml(c.label || '')}</div>
+        <div class="weather-temp">${fmtTemp(c.temp)}</div>
+        <div class="weather-detail">
+          Sensación <b>${fmtTemp(c.feels)}</b> ·
+          Hoy <b>${fmtTemp(today.max)}</b> / ${fmtTemp(today.min)}
+        </div>
+      </div>
+    </div>
+    <div class="wx-tiles">
+      ${tiles.map(([k, v]) => `
+        <div class="wx-tile"><span class="wx-tile-k">${k}</span><span class="wx-tile-v">${v}</span></div>`).join('')}
+    </div>
+    <div class="yify-cast-title">Próximos ${days.length} días</div>
+    <div class="wx-week">
+      ${days.map((d, i) => {
+        const ok = d.min != null && d.max != null;
+        const left = ok ? ((d.min - lo) / span) * 100 : 0;
+        const width = ok ? Math.max(((d.max - d.min) / span) * 100, 4) : 0;
+        return `
+        <div class="wx-day" title="${escapeHtml(d.label || '')}">
+          <span class="wx-day-name">${wxDayName(d, i)}</span>
+          <span class="wx-day-icon">${d.emoji || '•'}</span>
+          <span class="wx-day-label">${escapeHtml(d.label || '')}</span>
+          <span class="wx-day-rain" title="Probabilidad de lluvia · acumulado">💧 ${wxNum(d.rainPct, '%')}${d.rainMm ? ` · ${wxNum(d.rainMm, ' mm', 1)}` : ''}</span>
+          <span class="wx-day-wind" title="Viento máximo · ráfagas ${wxNum(d.gustMax, ' km/h')}">🌬 ${wxNum(d.windMax, '')} ${wxDir(d.windDir)}</span>
+          <span class="wx-day-min">${fmtTemp(d.min)}</span>
+          <span class="wx-day-bar"><i style="left:${left}%;width:${Math.min(width, 100 - left)}%"></i></span>
+          <span class="wx-day-max">${fmtTemp(d.max)}</span>
+        </div>`;
+      }).join('')}
+    </div>`;
+}
+
+function wxModalEsc(e) { if (e.key === 'Escape') closeWxModal(); }
+function closeWxModal() {
+  if (!wxModalEl) return;
+  document.removeEventListener('keydown', wxModalEsc);
+  wxModalEl.remove();
+  wxModalEl = null;
+}
+function openWxModal() {
+  closeWxModal();
+  const overlay = document.createElement('div');
+  overlay.className = 'fin-modal';
+  overlay.innerHTML = `
+    <div class="fin-modal-box wx-modal-box">
+      <div class="fin-exp-modal-head">
+        <span class="fin-exp-modal-title">🌤 Clima<span class="fin-exp-modal-count js-wx-loc"></span></span>
+        <button class="fin-modal-x js-wx-x" title="Cerrar">✕</button>
+      </div>
+      <div class="wx-modal-body js-wx-body"></div>
+    </div>`;
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) closeWxModal(); });
+  overlay.querySelector('.js-wx-x').addEventListener('click', closeWxModal);
+  document.addEventListener('keydown', wxModalEsc);
+  document.body.appendChild(overlay);
+  wxModalEl = overlay;
+  renderWxModal();
+}
+
+$('weather-grid').addEventListener('click', () => {
+  if (weatherData && !weatherData.error) openWxModal();
+});
 
 // ── Mercado: cripto (USD) + divisas → UYU (dos fuentes) ────────
 function fmtCryptoUsd(v) {
@@ -809,6 +997,7 @@ let yifyTimerStarted = false;
 // muerte de la API. favIds pinta los corazones; yifyFavsMode es la sección ♥.
 let yifyFavsMode = false;
 let favIds = new Set();
+let favImdbs = new Set();   // imdb ids de los favoritos: la misma película en YIFY y en Lime
 // Carpetas de favoritos: un explorador simple dentro de la sección ♥.
 // favAll = todas las pelis guardadas; favFolders = carpetas; favFolderId =
 // carpeta abierta (null = raíz, muestra carpetas + pelis sin carpeta).
@@ -836,35 +1025,67 @@ function yifyMeta(m) {
 // Corazón de like, compartido por las tres vistas. `mini` es la variante
 // inline de la vista lista (las otras dos lo superponen sobre el poster).
 function yifyFavHtml(m, i, mini = false) {
-  const on = favIds.has(m.id);
+  const on = isFav(m);
   return `<button class="yify-fav-btn${mini ? ' yify-fav-mini' : ''}${on ? ' faved' : ''} js-yify-fav" data-i="${i}"
     title="${on ? 'Quitar de favoritos' : 'Guardar en favoritos'}">${on ? '♥' : '♡'}</button>`;
 }
 
-// Chip de origen (YIFY / LIME) en la sección Favoritos: distingue de qué API
-// salió cada favorito. `inline` es la variante para la vista lista y la ficha.
-function favSrcHtml(m, inline = false) {
-  if (!yifyFavsMode || !m.source) return '';
-  return `<span class="fav-src fav-src-${m.source}${inline ? ' fav-src-inline' : ''}">${m.source === 'lime' ? 'LIME' : 'YIFY'}</span>`;
+// Etiqueta del origen de una película: LIME / YIFY / TMDB (una similar de
+// TMDB que no tiene torrents en ninguna de las dos fuentes).
+function srcLabel(source) {
+  return source === 'lime' ? 'LIME' : source === 'tmdb' ? 'TMDB' : 'YIFY';
 }
 
-// Alta/baja del favorito y refresco de la vista actual para repintar los
-// corazones. El alta es lenta (main baja la portada y la ficha completa para
-// guardarlas en la base): el botón queda deshabilitado mientras tanto.
+// Chip de origen (YIFY / LIME) en la sección Favoritos: distingue de qué API
+// salió cada favorito; "YIFY + LIME" cuando tiene torrents de las dos.
+// `inline` es la variante para la vista lista y la ficha.
+function favSrcHtml(m, inline = false) {
+  if (!yifyFavsMode || !m.source) return '';
+  const both = Array.isArray(m.sources) && m.sources.length > 1;
+  const cls = both ? 'fav-src-both' : `fav-src-${m.source}`;
+  return `<span class="fav-src ${cls}${inline ? ' fav-src-inline' : ''}">${both ? 'YIFY + LIME' : srcLabel(m.source)}</span>`;
+}
+
+// La misma película puede estar en YIFY y en Lime con ids distintos: un
+// favorito se reconoce también por su imdb id, así el ♥ se ve en las dos
+// fuentes y quitarlo desde cualquiera saca el único registro que hay.
+function favImdbKey(m) {
+  if (!m) return null;
+  const direct = String(m.imdb || '').trim().toLowerCase();
+  if (/^tt\d+$/.test(direct)) return direct;
+  const mm = /imdb\.com\/title\/(tt\d+)/i.exec(`${m.imdbUrl || ''} ${m.url || ''}`);
+  return mm ? mm[1].toLowerCase() : null;
+}
+function isFav(m) {
+  if (!m) return false;
+  if (favIds.has(m.id)) return true;
+  const k = favImdbKey(m);
+  return !!(k && favImdbs.has(k));
+}
+function setFavKeys(keys) {
+  favIds = new Set(Array.isArray(keys && keys.ids) ? keys.ids : []);
+  favImdbs = new Set((Array.isArray(keys && keys.imdbs) ? keys.imdbs : []).map((s) => String(s).toLowerCase()));
+}
+async function refreshFavKeys() {
+  try { setFavKeys(await window.api.favs.ids()); } catch {}
+}
+
+// Alta/baja del favorito y refresco de las grillas para repintar los
+// corazones (las dos: la película puede estar en YIFY y en Lime). El alta es
+// lenta (main baja la portada, la ficha completa y los torrents de la otra
+// fuente): el botón queda deshabilitado mientras tanto.
 async function toggleYifyFav(m) {
   if (!m || !m.id) return;
   try {
-    if (favIds.has(m.id)) {
-      const r = await window.api.favs.remove(m.id);
-      if (r && r.ok) favIds.delete(m.id);
-    } else {
-      const r = await window.api.favs.add(m);
-      if (r && r.ok) favIds.add(m.id);
-    }
+    if (isFav(m)) await window.api.favs.remove({ id: m.id, imdb: favImdbKey(m) });
+    else await window.api.favs.add(m);
   } catch {}
+  await refreshFavKeys();   // ids reales: el alta pudo fundirse en un favorito existente
   if (yifyFavsMode) loadYifyFavs();
-  else if (m.source === 'lime') { if (limeShown.length) renderLimeCards(limeShown); }
-  else if (yifyShown.length) renderYifyMovies(yifyShown);
+  else {
+    if (yifyShown.length) renderYifyMovies(yifyShown);
+    if (limeShown.length) renderLimeCards(limeShown);
+  }
 }
 
 // El card de "Últimos estrenos" se muestra si hay pelis O series — o si una
@@ -1040,9 +1261,9 @@ function renderYifyCards(el) {
         ${m.genres && m.genres.length ? `<div class="yify-genres">${escapeHtml(m.genres.join(' · '))}</div>` : ''}
         <div class="yify-quals">
           ${(m.torrents || []).map((t, ti) => `
-            <button class="yify-q js-yify-magnet" data-i="${i}" data-t="${ti}"
-              title="Magnet ${escapeHtml(t.quality)}${t.type ? ` ${escapeHtml(t.type)}` : ''} · ${escapeHtml(t.size)}${t.seeds != null ? ` · ${t.seeds} seeds` : ''}">
-              🧲 ${escapeHtml(t.quality)}
+            <button class="yify-q js-yify-magnet" data-i="${i}" data-t="${ti}"${qualSrcAttr(m, t)}
+              title="Magnet ${escapeHtml(t.quality || '?')}${t.type ? ` ${escapeHtml(t.type)}` : ''} · ${escapeHtml(t.size)}${t.seeds != null ? ` · ${t.seeds} seeds` : ''}${qualSrcTitle(m, t)}">
+              🧲 ${escapeHtml(t.quality || '?')}
             </button>`).join('')}
         </div>
       </div>
@@ -1232,16 +1453,30 @@ async function loadYifyFavs() {
   const pager = $('yify-pager');
   if (pager) pager.innerHTML = '';
   if (el) { el.className = 'yify-grid'; el.innerHTML = `<div class="ai-loading">Cargando favoritos…</div>`; }
-  let favs = [], folders = [];
+  let favs = [], folders = [], loadErr = null;
   try {
     const [r, fs] = await Promise.all([window.api.favs.list(), window.api.favs.folders()]);
     if (Array.isArray(r)) favs = r;
+    else loadErr = (r && r.error) || 'respuesta inválida';
     if (Array.isArray(fs)) folders = fs;
-  } catch {}
+  } catch (e) { loadErr = (e && e.message) || String(e); }
   if (!yifyFavsMode) return;   // salieron de la sección mientras cargaba
+  // La base local no se pudo leer: se muestra el error real en vez de fingir
+  // "sin favoritos" (nada se pierde — la copia autoritativa vive en Mongo).
+  if (loadErr) {
+    yifyShown = [];
+    renderFavBar();
+    if (el) {
+      el.className = 'yify-grid';
+      el.innerHTML = `<div class="ai-loading">No se pudieron leer los favoritos: ${escapeHtml(loadErr)}. Nada se perdió — la copia vive en Mongo; reabrí el widget para regenerar la base local.</div>`;
+    }
+    adjustWindowSize();
+    return;
+  }
   favAll = favs;
   favFolders = folders;
   favIds = new Set(favs.map((f) => f.id));
+  favImdbs = new Set(favs.map((f) => f.imdb).filter(Boolean));
   // Si la carpeta abierta ya no existe (borrada en otra máquina), volvé a raíz.
   if (favFolderId != null && !favFolders.some((f) => f.id === favFolderId)) favFolderId = null;
   renderFavBar();
@@ -1524,7 +1759,8 @@ function wireFavDropTarget(el, folderId) {
   });
 }
 
-// Habilita el arrastre de las tarjetas/filas de película en modo Favoritos.
+// Habilita el arrastre de las tarjetas/filas de película en modo Favoritos y
+// el menú de click derecho ("Mover a…").
 // Se llama tras cada render (también al cambiar de vista).
 function enableFavDnD(el) {
   let items;
@@ -1539,6 +1775,13 @@ function enableFavDnD(el) {
     item.setAttribute('draggable', 'true');
     item.classList.add('fav-draggable');
     item.querySelectorAll('img').forEach((im) => { im.draggable = false; });
+    // Click derecho: el menú con "Mover a…" (lo mismo que arrastrar, pero
+    // llegando a cualquier carpeta del árbol).
+    item.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      openFavCtxMenu(e.clientX, e.clientY, m);
+    });
     item.addEventListener('dragstart', (e) => {
       favDragId = m.id;
       try { e.dataTransfer.setData('text/plain', String(m.id)); } catch {}
@@ -1557,13 +1800,214 @@ function enableFavDnD(el) {
   });
 }
 
+// ── Click derecho sobre una película favorita ──────────────────
+// Menú flotante chico anclado al puntero: "Mover a…" abre el selector de
+// carpetas (donde además se puede crear una nueva) y, si la peli ya está en
+// una carpeta, un atajo para devolverla a la raíz. Es la alternativa al
+// arrastre para cuando la carpeta destino no está a la vista (otro nivel del
+// árbol) o la ventana quedó chica. Solo existe en modo Favoritos.
+let favCtxEl = null;
+function closeFavCtx() {
+  if (favCtxEl) { favCtxEl.remove(); favCtxEl = null; }
+  document.removeEventListener('mousedown', favCtxAway, true);
+  document.removeEventListener('keydown', favCtxKey, true);
+  window.removeEventListener('resize', closeFavCtx);
+  window.removeEventListener('scroll', closeFavCtx, true);
+}
+function favCtxAway(e) { if (favCtxEl && !favCtxEl.contains(e.target)) closeFavCtx(); }
+function favCtxKey(e) { if (e.key === 'Escape') { e.stopPropagation(); closeFavCtx(); } }
+
+function openFavCtxMenu(x, y, movie) {
+  closeFavCtx();
+  const fid = movie.folderId ?? null;
+  const folder = favFolders.find((f) => f.id === fid) || null;
+  const menu = document.createElement('div');
+  menu.className = 'fav-ctx';
+  menu.innerHTML = `
+    <div class="fav-ctx-head" title="${escapeHtml(movie.title || '')}">${escapeHtml(movie.title || 'Película')}</div>
+    <div class="fav-ctx-where">${folder ? `📁 En «${escapeHtml(folder.name)}»` : '🏠 Sin carpeta'}</div>
+    <button class="fav-ctx-item js-ctx-move">📂 Mover a…</button>
+    ${folder ? `<button class="fav-ctx-item js-ctx-root">🏠 Sacar de la carpeta</button>` : ''}`;
+  document.body.appendChild(menu);
+  favCtxEl = menu;
+
+  // Que no se salga de la ventana (la grilla llega hasta el borde).
+  const pad = 6;
+  const w = menu.offsetWidth, h = menu.offsetHeight;
+  menu.style.left = `${Math.max(pad, Math.min(x, window.innerWidth - w - pad))}px`;
+  menu.style.top = `${Math.max(pad, Math.min(y, window.innerHeight - h - pad))}px`;
+
+  menu.querySelector('.js-ctx-move').addEventListener('click', () => openFavMoveModal(movie));
+  const rootBtn = menu.querySelector('.js-ctx-root');
+  if (rootBtn) rootBtn.addEventListener('click', async () => {
+    closeFavCtx();
+    const r = await window.api.favs.move(movie.id, null);
+    if (r && r.error) return;
+    loadYifyFavs();
+  });
+  document.addEventListener('mousedown', favCtxAway, true);
+  document.addEventListener('keydown', favCtxKey, true);
+  window.addEventListener('resize', closeFavCtx);
+  window.addEventListener('scroll', closeFavCtx, true);
+}
+
+// Modal "Mover a": árbol completo de carpetas para elegir destino (raíz
+// incluida) + crear una carpeta nueva sin salir. La carpeta nueva cuelga del
+// destino elegido — así se arma la jerarquía desde el mismo modal — y queda
+// seleccionada para mover ahí de una.
+let favMoveEl = null;
+function closeFavMove() {
+  if (favMoveEl) { favMoveEl.remove(); favMoveEl = null; }
+  document.removeEventListener('keydown', favMoveEsc);
+}
+function favMoveEsc(e) { if (e.key === 'Escape') closeFavMove(); }
+
+function openFavMoveModal(movie) {
+  closeFavCtx();
+  closeFavMove();
+  const from = movie.folderId ?? null;   // dónde está ahora
+  let dest = from;                       // destino elegido
+  let creating = false;                  // input "nueva carpeta" abierto
+  let err = '';
+
+  const overlay = document.createElement('div');
+  overlay.className = 'fin-modal';
+  document.body.appendChild(overlay);
+  favMoveEl = overlay;
+  document.addEventListener('keydown', favMoveEsc);
+
+  const nameOf = (id) => {
+    const f = favFolders.find((x) => x.id === id);
+    return f ? f.name : 'Todas (raíz)';
+  };
+  const row = (id, name, ico, depth) => {
+    const n = favAll.filter((m) => (m.folderId ?? null) === id).length;
+    return `
+    <div class="fav-tree-row fav-move-row${dest === id ? ' sel' : ''}" data-fid="${id == null ? '' : id}" style="padding-left:${depth * 18 + 12}px">
+      <span class="fav-tree-ico">${ico}</span>
+      <span class="fav-tree-name">${escapeHtml(name)}</span>
+      ${from === id ? '<span class="fav-move-here">acá está</span>' : ''}
+      <span class="yify-fav-count">${n}</span>
+    </div>`;
+  };
+  // Subcarpetas recursivas; `guard` corta ciclos por si un parent quedó mal.
+  const walk = (pid, depth, guard) => favFolders
+    .filter((f) => (f.parentId ?? null) === pid)
+    .map((f) => {
+      if (guard.has(f.id)) return '';
+      guard.add(f.id);
+      return row(f.id, f.name, '📁', depth) + walk(f.id, depth + 1, guard);
+    }).join('');
+
+  const draw = () => {
+    overlay.innerHTML = `
+      <div class="fin-modal-box fav-move-box">
+        <div class="fin-exp-modal-head">
+          <span class="fin-exp-modal-title">📂 Mover a…</span>
+          <button class="fin-modal-x js-move-x" title="Cerrar">✕</button>
+        </div>
+        <div class="fav-move-movie" title="${escapeHtml(movie.title || '')}">🎬 ${escapeHtml(movie.title || 'Película')}</div>
+        <div class="fav-tree fav-move-tree">
+          ${row(null, 'Todas (raíz)', '🏠', 0)}
+          ${walk(null, 1, new Set())}
+        </div>
+        <div class="fav-move-new">
+          ${creating
+            ? `<input class="fin-input yify-fav-newinput js-move-newinput" placeholder="Nombre de la carpeta… (Enter)" autocomplete="off" maxlength="40">`
+            : `<button class="fin-btn js-move-new" title="Crear una carpeta dentro de «${escapeHtml(nameOf(dest))}»">＋ Nueva carpeta en «${escapeHtml(nameOf(dest))}»</button>`}
+        </div>
+        ${err ? `<div class="fav-move-err">${escapeHtml(err)}</div>` : ''}
+        <div class="fin-modal-actions">
+          <button class="yify-fav-tool js-move-cancel">Cancelar</button>
+          <button class="fin-btn js-move-ok"${dest === from ? ' disabled title="Ya está en esa carpeta"' : ''}>Mover acá</button>
+        </div>
+      </div>`;
+    wire();
+    const sel = overlay.querySelector('.fav-move-row.sel');
+    if (sel) sel.scrollIntoView({ block: 'nearest' });
+  };
+
+  // Cambiar de destino no redibuja el modal (si no, el segundo clic del
+  // doble clic caería sobre una fila ya reemplazada): retoca lo que cambia.
+  const syncSel = () => {
+    overlay.querySelectorAll('.fav-move-row').forEach((r) => {
+      const id = r.dataset.fid === '' ? null : +r.dataset.fid;
+      r.classList.toggle('sel', id === dest);
+    });
+    const nb = overlay.querySelector('.js-move-new');
+    if (nb) {
+      nb.textContent = `＋ Nueva carpeta en «${nameOf(dest)}»`;
+      nb.title = `Crear una carpeta dentro de «${nameOf(dest)}»`;
+    }
+    const ok = overlay.querySelector('.js-move-ok');
+    if (ok) { ok.disabled = dest === from; ok.title = dest === from ? 'Ya está en esa carpeta' : ''; }
+    const e = overlay.querySelector('.fav-move-err');
+    if (e) e.remove();
+  };
+
+  const doMove = async () => {
+    if (dest === from) { closeFavMove(); return; }
+    const btn = overlay.querySelector('.js-move-ok');
+    if (btn) { btn.disabled = true; btn.textContent = 'Moviendo…'; }
+    const r = await window.api.favs.move(movie.id, dest);
+    if (r && r.error) { err = r.error; draw(); return; }
+    closeFavMove();
+    loadYifyFavs();
+  };
+
+  const wire = () => {
+    overlay.querySelector('.js-move-x').addEventListener('click', closeFavMove);
+    overlay.querySelector('.js-move-cancel').addEventListener('click', closeFavMove);
+    overlay.querySelector('.js-move-ok').addEventListener('click', doMove);
+
+    overlay.querySelectorAll('.fav-move-row').forEach((r) => {
+      const id = r.dataset.fid === '' ? null : +r.dataset.fid;
+      r.addEventListener('click', () => { dest = id; err = ''; syncSel(); });
+      r.addEventListener('dblclick', () => { dest = id; doMove(); });
+    });
+
+    if (creating) {
+      const input = overlay.querySelector('.js-move-newinput');
+      input.focus();
+      let done = false;
+      const commit = async () => {
+        if (done) return; done = true;
+        const name = input.value.trim();
+        creating = false;
+        if (!name) { draw(); return; }
+        // Cuelga del destino elegido en ese momento (se puede cambiar de fila
+        // con el input abierto).
+        const r = await window.api.favs.createFolder(name, dest);
+        if (r && r.ok && r.folder) {
+          favFolders.push(r.folder);
+          dest = r.folder.id;   // queda elegida: un clic más y la peli va ahí
+          renderFavBar();       // la barra de atrás muestra la carpeta nueva
+        } else {
+          err = (r && r.error) || 'No se pudo crear la carpeta';
+        }
+        draw();
+      };
+      input.addEventListener('keydown', (e) => {
+        e.stopPropagation();
+        if (e.key === 'Enter') commit();
+        else if (e.key === 'Escape') { done = true; creating = false; draw(); }
+      });
+    } else {
+      overlay.querySelector('.js-move-new').addEventListener('click', () => { creating = true; err = ''; draw(); });
+    }
+  };
+
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) closeFavMove(); });
+  draw();
+}
+
 function setYifyFavsMode(on) {
   yifyFavsMode = !!on;
   const btn = $('yify-favs-btn');
   if (btn) btn.classList.toggle('active', yifyFavsMode);
   // La búsqueda y los filtros le pegan a la API: se ocultan en Favoritos
   // (el toggle de vista sí aplica, queda visible).
-  ['yify-search', 'yify-search-btn'].forEach((id) => {
+  ['yify-search', 'yify-search-clear', 'yify-search-btn'].forEach((id) => {
     const n = $(id);
     if (n) n.style.display = yifyFavsMode ? 'none' : '';
   });
@@ -1641,7 +2085,10 @@ async function openYifyModal(movieId) {
 
 // Ficha armada con un objeto ya cargado (sin pegarle a la API de YIFY):
 // favoritos desde SQLite, y también las películas de LimeTorrents (el feed
-// ya trae los magnets; no hay endpoint de detalles que consultar).
+// ya trae los magnets; no hay endpoint de detalles que consultar). Las de
+// Lime se pintan al instante con lo que trae el feed y después se completan
+// con reparto, sinopsis y similares (movies:ficha por imdb id: YIFY o TMDB),
+// para que la ficha quede como la de YIFY.
 function openFavModal(m) {
   closeYifyModal();
   const overlay = document.createElement('div');
@@ -1651,17 +2098,182 @@ function openFavModal(m) {
   document.addEventListener('keydown', yifyModalEsc);
   document.body.appendChild(overlay);
   yifyModalEl = overlay;
-  fillYifyModal(overlay.querySelector('.yify-modal-box'), m, []);
+  const box = overlay.querySelector('.yify-modal-box');
+  fillYifyModal(box, m, []);
+  if (m.source === 'lime') enrichLimeModal(overlay, box, m);
 }
 
-// Links externos de la ficha según la fuente: YIFY → YTS; Lime → IMDb +
-// página del torrent. Un favorito de Lime solo persiste `url` (IMDb o Lime).
+// imdb id de una película de Lime: el del grupo o, en un favorito viejo (solo
+// persiste `url`), el de la URL de IMDb. null si el feed no tuvo match.
+function limeImdbOf(m) {
+  if (m.imdb) return m.imdb;
+  const mm = /imdb\.com\/title\/(tt\d+)/i.exec(m.imdbUrl || m.url || '');
+  return mm ? mm[1] : null;
+}
+
+// Completa la ficha de Lime con reparto, sinopsis, géneros, trailer y
+// sugerencias y re-pinta el modal con el objeto fusionado (id, torrents y
+// origen siguen siendo los de Lime — así el ♥ guarda la ficha completa).
+async function enrichLimeModal(overlay, box, m) {
+  const imdb = limeImdbOf(m);
+  if (!imdb) return;
+  const hasFicha = m.synopsis && m.cast && m.cast.length;   // favorito ya completo
+  const note = document.createElement('div');
+  note.className = 'yify-modal-note';
+  note.textContent = hasFicha ? 'Buscando similares…' : 'Buscando reparto, sinopsis y similares…';
+  box.appendChild(note);
+  let f = null;
+  try { f = await window.api.movies.ficha({ imdb }); } catch {}
+  if (yifyModalEl !== overlay) return;   // la cerraron mientras cargaba
+  if (!f || f.error) {
+    if (hasFicha) note.remove();
+    else note.textContent = `Sin ficha extendida${f && f.error ? ` (${f.error})` : ''}`;
+    return;
+  }
+  fillYifyModal(box, mergeFicha(m, f), Array.isArray(f.suggestions) ? f.suggestions : []);
+}
+
+// Fusión de una película (Lime) con una ficha extendida (YIFY/TMDB): lo que
+// la película ya sabe manda (título, año, poster, torrents, id, origen); la
+// ficha aporta lo que falta.
+function mergeFicha(m, f) {
+  return {
+    ...m,
+    synopsis: f.synopsis || m.synopsis || '',
+    cast: (f.cast && f.cast.length) ? f.cast : (m.cast || []),
+    genres: (m.genres && m.genres.length) ? m.genres : (f.genres || []),
+    rating: m.rating ?? f.rating ?? null,
+    runtime: m.runtime ?? f.runtime ?? null,
+    trailer: m.trailer || f.trailer || null,
+    cover: m.cover || f.cover || null,
+    imdb: m.imdb || f.imdb || null,
+  };
+}
+
+// Ficha de una película similar de TMDB (click en "Sugerencias" de una ficha
+// de Lime completada por TMDB). movies:ficha resuelve tmdbId → imdb id y
+// prueba YIFY: si está, se abre la ficha completa de YIFY (torrents + "Ver
+// online"). Si no, se muestra la de TMDB y se buscan magnets en LimeTorrents
+// por título; sin torrents en ninguna, queda la ficha sola con un acceso al
+// buscador del tab Films.
+async function openTmdbMovieModal(tmdbId) {
+  closeYifyModal();
+  const overlay = document.createElement('div');
+  overlay.className = 'fin-modal';
+  overlay.innerHTML = `
+    <div class="fin-modal-box yify-modal-box">
+      <div class="ai-loading">Cargando ficha…</div>
+    </div>`;
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) closeYifyModal(); });
+  document.addEventListener('keydown', yifyModalEsc);
+  document.body.appendChild(overlay);
+  yifyModalEl = overlay;
+
+  let f = null;
+  try { f = await window.api.movies.ficha({ tmdbId }); } catch {}
+  if (yifyModalEl !== overlay) return;
+  const box = overlay.querySelector('.yify-modal-box');
+  if (!f || f.error) {
+    box.innerHTML = `
+      <div class="yify-down-msg">⚠️ No se pudo cargar la ficha${f && f.error ? ` <span class="yify-down-err">(${escapeHtml(f.error)})</span>` : ''}</div>
+      <div class="fin-modal-actions"><button class="fin-btn js-yify-x">Cerrar</button></div>`;
+    box.querySelector('.js-yify-x').addEventListener('click', closeYifyModal);
+    return;
+  }
+  // Está en YIFY: su ficha completa (torrents, "Ver online", sugerencias).
+  if (f.source === 'yify' && f.id) { openYifyModal(f.id); return; }
+
+  const sug = Array.isArray(f.suggestions) ? f.suggestions : [];
+  fillYifyModal(box, { ...f, id: null, source: 'tmdb', torrents: [] }, sug);
+  const note = document.createElement('div');
+  note.className = 'yify-modal-note';
+  note.textContent = 'No está en YIFY — buscando torrents en LimeTorrents…';
+  const quals = box.querySelector('.yify-quals');
+  if (quals) quals.after(note);
+
+  // Torrents de Lime: primero lo ya cargado en el tab (mismo imdb id, o mismo
+  // título y año) y, si no está, el buscador del sitio. El searchrss no banca
+  // los dos puntos ni otros signos, así que la consulta va limpia; con
+  // subtítulo ("Título: Lo que sea") se reintenta solo con la parte principal.
+  const norm = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+  const imdb = (f.imdb || '').toLowerCase();
+  const sameMovie = (x) => (imdb && x.imdb && x.imdb.toLowerCase() === imdb)
+    || (norm(x.title) === norm(f.title) && (!f.year || !x.year || Math.abs(x.year - f.year) <= 1));
+  let g = limeAll.find(sameMovie) || null;
+  if (!g) {
+    const queries = [norm(f.title)];
+    if (f.title.includes(':')) queries.push(norm(f.title.split(':')[0]));
+    for (const q of queries) {
+      if (g || !q) break;
+      try {
+        const r = await window.api.lime.search({ cat: 'movies', query: q });
+        if (yifyModalEl !== overlay) return;
+        const list = (r && !r.error && Array.isArray(r.movies)) ? r.movies : [];
+        g = list.find(sameMovie) || null;
+      } catch {}
+    }
+  }
+  if (yifyModalEl !== overlay) return;
+  if (g) {
+    // Ficha de Lime completada con lo de TMDB (♥ y magnets como cualquier Lime).
+    fillYifyModal(box, mergeFicha(g, f), sug);
+    return;
+  }
+  note.innerHTML = `Sin torrents en YIFY ni LimeTorrents. <button class="rd-ext js-yify-find">Buscar en Films ↗</button>`;
+  note.querySelector('.js-yify-find').addEventListener('click', () => {
+    closeYifyModal();
+    switchTab('torrents');
+    if (yifyFavsMode) setYifyFavsMode(false);
+    const inp = $('yify-search');
+    if (inp) { inp.value = f.title; yifySearchNew(); }
+  });
+}
+
+// Links externos de la ficha según las fuentes: YIFY → YTS; Lime/TMDB → IMDb +
+// página del torrent. Un favorito con torrents de las dos fuentes muestra los
+// tres: la página de YTS / de Lime sale de sus propios torrents (`page`).
 function movieLinkButtons(m) {
   const btn = (label, url) => `<button class="fin-btn js-yify-link" data-url="${escapeHtml(url)}">${label}</button>`;
-  if (m.source !== 'lime') return m.url ? btn('Ver en YTS ↗', m.url) : '';
-  const imdb = m.imdbUrl || (/imdb\.com/i.test(m.url || '') ? m.url : null);
-  const page = m.page || (m.url && !/imdb\.com/i.test(m.url) ? m.url : null);
-  return (imdb ? btn('Ver en IMDb ↗', imdb) : '') + (page ? btn('LimeTorrents ↗', page) : '');
+  const ts = m.torrents || [];
+  const isImdb = (u) => /imdb\.com/i.test(u || '');
+  const pageOf = (src) => { const t = ts.find((x) => x.source === src && x.page); return t ? t.page : null; };
+  const fromYify = m.source !== 'lime' && m.source !== 'tmdb';
+  const yts = (fromYify && m.url && !isImdb(m.url)) ? m.url : pageOf('yify');
+  const lime = m.page || (!fromYify && m.url && !isImdb(m.url) ? m.url : null) || pageOf('lime');
+  const imdb = (!fromYify || lime)
+    ? (m.imdbUrl || (m.imdb ? `https://www.imdb.com/title/${m.imdb}/` : null) || (isImdb(m.url) ? m.url : null))
+    : null;
+  return (yts ? btn('Ver en YTS ↗', yts) : '') + (imdb ? btn('Ver en IMDb ↗', imdb) : '') + (lime ? btn('LimeTorrents ↗', lime) : '');
+}
+
+// Un favorito con torrents de YIFY y de Lime a la vez: los badges de calidad
+// se distinguen por origen (data-src pinta los de Lime).
+function mixedSources(m) {
+  return Array.isArray(m.sources) && m.sources.length > 1;
+}
+function qualSrcAttr(m, t) {
+  return (mixedSources(m) && t.source) ? ` data-src="${t.source}"` : '';
+}
+function qualSrcTitle(m, t) {
+  return (mixedSources(m) && t.source) ? ` · ${srcLabel(t.source)}` : '';
+}
+
+// Botones de magnet de la ficha. Con torrents de las dos fuentes se agrupan
+// por origen con su etiqueta; con una sola se ven como siempre.
+function modalQualsHtml(m) {
+  const ts = m.torrents || [];
+  const btn = (t, ti) => `
+            <button class="yify-q js-yify-modal-magnet" data-t="${ti}"${qualSrcAttr(m, t)}
+              title="Magnet ${escapeHtml(t.quality || '?')}${t.type ? ` ${escapeHtml(t.type)}` : ''} · ${escapeHtml(t.size)}${t.seeds != null ? ` · ${t.seeds} seeds` : ''}${qualSrcTitle(m, t)}">
+              🧲 ${escapeHtml(t.quality || '?')} <span class="yify-q-size">${escapeHtml(t.size)}</span>
+            </button>`;
+  const srcs = [...new Set(ts.map((t) => t.source).filter(Boolean))];
+  if (!mixedSources(m) || srcs.length < 2) return `<div class="yify-quals">${ts.map(btn).join('')}</div>`;
+  return srcs.map((s) => `
+        <div class="yify-quals yify-quals-src">
+          <span class="fav-src fav-src-${s} fav-src-inline">${srcLabel(s)}</span>
+          ${ts.map((t, ti) => (t.source === s ? btn(t, ti) : '')).join('')}
+        </div>`).join('');
 }
 
 // Cuerpo + wiring de la ficha, compartido entre la versión API (YIFY), las
@@ -1677,21 +2289,15 @@ function fillYifyModal(box, m, sugMovies) {
         ? `<img class="yify-poster yify-modal-poster" src="${escapeHtml(m.cover)}" alt="">`
         : `<div class="yify-poster yify-modal-poster yify-noposter">🎬</div>`}
       <div class="yify-modal-info">
-        <div class="yify-meta">${escapeHtml(yifyMeta(m))}${m.source ? ` <span class="fav-src fav-src-${m.source} fav-src-inline">${m.source === 'lime' ? 'LIME' : 'YIFY'}</span>` : ''}</div>
+        <div class="yify-meta">${escapeHtml(yifyMeta(m))}${m.source ? ` <span class="fav-src fav-src-${m.source} fav-src-inline">${srcLabel(m.source)}</span>` : ''}</div>
         ${m.genres && m.genres.length ? `<div class="yify-genres">${escapeHtml(m.genres.join(' · '))}</div>` : ''}
         <div class="yify-modal-actions-row">
           ${bestStreamTorrent(m) ? `<button class="fin-btn yify-watch-action js-yify-watch">▶ Ver online</button>` : ''}
-          <button class="fin-btn yify-fav-action js-yify-modal-fav${favIds.has(m.id) ? ' faved' : ''}">${favIds.has(m.id) ? '♥ En favoritos' : '♡ Guardar en favoritos'}</button>
+          ${m.id ? `<button class="fin-btn yify-fav-action js-yify-modal-fav${isFav(m) ? ' faved' : ''}">${isFav(m) ? '♥ En favoritos' : '♡ Guardar en favoritos'}</button>` : ''}
           ${m.trailer ? `<button class="fin-btn js-yify-link" data-url="${escapeHtml(m.trailer)}">▶ Trailer</button>` : ''}
           ${movieLinkButtons(m)}
         </div>
-        <div class="yify-quals">
-          ${(m.torrents || []).map((t, ti) => `
-            <button class="yify-q js-yify-modal-magnet" data-t="${ti}"
-              title="Magnet ${escapeHtml(t.quality)}${t.type ? ` ${escapeHtml(t.type)}` : ''} · ${escapeHtml(t.size)}${t.seeds != null ? ` · ${t.seeds} seeds` : ''}">
-              🧲 ${escapeHtml(t.quality)} <span class="yify-q-size">${escapeHtml(t.size)}</span>
-            </button>`).join('')}
-        </div>
+        ${modalQualsHtml(m)}
         ${m.cast && m.cast.length ? `
           <div class="yify-cast-title">Reparto</div>
           <div class="yify-cast">${m.cast.map((c) =>
@@ -1704,7 +2310,7 @@ function fillYifyModal(box, m, sugMovies) {
       <div class="yify-cast-title">Sugerencias</div>
       <div class="yify-sug-grid">
         ${sugMovies.map((s) => `
-          <div class="yify-dash-cell js-yify-sug" data-id="${s.id}" title="${escapeHtml(s.title)}${s.year ? ` (${s.year})` : ''}">
+          <div class="yify-dash-cell js-yify-sug" data-id="${s.id}" data-src="${s.src || 'yify'}" title="${escapeHtml(s.title)}${s.year ? ` (${s.year})` : ''}">
             ${s.cover
               ? `<img class="yify-poster" src="${escapeHtml(s.cover)}" loading="lazy" alt="">`
               : `<div class="yify-poster yify-noposter">🎬</div>`}
@@ -1718,10 +2324,10 @@ function fillYifyModal(box, m, sugMovies) {
   if (favBtn) favBtn.addEventListener('click', async () => {
     if (favBtn.disabled) return;
     favBtn.disabled = true;
-    favBtn.textContent = favIds.has(m.id) ? 'Quitando…' : 'Guardando…';
+    favBtn.textContent = isFav(m) ? 'Quitando…' : 'Guardando…';
     await toggleYifyFav(m);
     favBtn.disabled = false;
-    const on = favIds.has(m.id);
+    const on = isFav(m);
     favBtn.classList.toggle('faved', on);
     favBtn.textContent = on ? '♥ En favoritos' : '♡ Guardar en favoritos';
   });
@@ -1737,8 +2343,13 @@ function fillYifyModal(box, m, sugMovies) {
       if (link) window.api.openExternal(link);
     });
   });
+  // Sugerencias: las de YIFY abren su ficha; las de TMDB (similares de una
+  // película de Lime que YIFY no tiene) se resuelven en openTmdbMovieModal.
   box.querySelectorAll('.js-yify-sug').forEach((c) => {
-    c.addEventListener('click', () => openYifyModal(+c.dataset.id));
+    c.addEventListener('click', () => {
+      if (c.dataset.src === 'tmdb') openTmdbMovieModal(+c.dataset.id);
+      else openYifyModal(+c.dataset.id);
+    });
   });
 }
 
@@ -1763,7 +2374,8 @@ function bestStreamTorrent(m) {
     if (q.startsWith('2160')) return 1;   // HEVC: menos compatible
     return 0;
   };
-  return ts.slice().sort((a, b) => rank(b) - rank(a))[0];
+  const srcRank = (t) => (t.source === 'lime' ? 0 : 1);   // YIFY reproduce directo; Lime suele ser MKV/HEVC
+  return ts.slice().sort((a, b) => rank(b) - rank(a) || srcRank(b) - srcRank(a))[0];
 }
 
 function fmtSpeed(bps) {
@@ -2090,17 +2702,18 @@ if (yifyDashRefreshBtn) yifyDashRefreshBtn.addEventListener('click', () => { ref
 const yifyFavsBtn = $('yify-favs-btn');
 if (yifyFavsBtn) yifyFavsBtn.addEventListener('click', () => setYifyFavsMode(!yifyFavsMode));
 // Ids de favoritos al arrancar, para pintar los ♥ sobre lo ya renderizado.
-window.api.favs.ids().then((ids) => {
-  favIds = new Set(Array.isArray(ids) ? ids : []);
+window.api.favs.ids().then((keys) => {
+  setFavKeys(keys);
   if (!yifyFavsMode && yifyShown.length) renderYifyMovies(yifyShown);
+  if (limeShown.length) renderLimeCards(limeShown);
 }).catch(() => {});
 
 // ── LimeTorrents RSS (tab Torrents Films) ──────────────────────
 // Segunda fuente del tab Films: el feed RSS de limetorrents.fun (categoría
 // Movies). No hay búsqueda — main agrupa los releases del feed por película
 // y los enriquece con el poster de IMDb, así las cards se ven como las de
-// YIFY (poster + badges de calidad con magnet). El click en el poster abre
-// la ficha de IMDb (o la página del torrent si no hubo match). Mismo patrón
+// YIFY (poster + badges de calidad con magnet). El click abre la ficha, que
+// se completa con reparto, sinopsis y similares por imdb id. Mismo patrón
 // defensivo que YIFY/EZTV: initLime() corre el health check y si el feed se
 // cae la grilla degrada a "RSS caído" con Reintentar.
 const LIME_COUNT = 50;      // releases del feed (se apilan por película)
@@ -2159,7 +2772,7 @@ function limeMeta(m) {
 }
 
 function limeFavHtml(m, i, mini = false) {
-  const on = favIds.has(m.id);
+  const on = isFav(m);
   return `<button class="yify-fav-btn${mini ? ' yify-fav-mini' : ''}${on ? ' faved' : ''} js-lime-fav" data-i="${i}"
     title="${on ? 'Quitar de favoritos' : 'Guardar en favoritos'}">${on ? '♥' : '♡'}</button>`;
 }
@@ -2271,7 +2884,8 @@ function renderLimeTable(el) {
 
 // Dispatcher de la grilla: usa la MISMA vista que YIFY — el toggle vive en la
 // barra del tab y manda sobre las dos fuentes. El click abre la ficha (mismo
-// modal que YIFY, sin sinopsis/cast — el RSS no los trae).
+// modal que YIFY; el RSS no trae sinopsis/cast, se completan por imdb id —
+// ver openFavModal / enrichLimeModal).
 function renderLimeCards(movies) {
   const el = $('lime-list');
   if (!el) return;
@@ -2840,20 +3454,69 @@ function markEzDown(err) {
   renderEzDown(err);
 }
 
+// ── Orden de las tablas de episodios (modal de serie) ──────────
+// Click en un encabezado (S·E, calidad, tamaño, seeds, leech, fecha) ordena
+// la tabla de mayor a menor; segundo click invierte; tercero vuelve al orden
+// de la API (más reciente primero). Persiste en localStorage y aplica a las
+// dos tablas del modal a la vez ("Subidos recientemente" y "Todos").
+let ezEpSort = null;   // { key, dir: 1 (desc) | -1 (asc) } | null
+try { ezEpSort = JSON.parse(localStorage.getItem('ezEpSort') || 'null'); } catch {}
+if (ezEpSort && (typeof ezEpSort.key !== 'string' || ![1, -1].includes(ezEpSort.dir))) ezEpSort = null;
+
+// Tamaño en bytes: EZTV y Lime traen sizeBytes; los favoritos viejos solo el
+// texto ("1.2 GB", "700 MB").
+function ezSizeBytes(t) {
+  if (t.sizeBytes) return Number(t.sizeBytes) || 0;
+  const m = /([\d.,]+)\s*([KMGT])i?B/i.exec(t.size || '');
+  if (!m) return 0;
+  const n = parseFloat(m[1].replace(',', '.'));
+  const exp = { K: 1, M: 2, G: 3, T: 4 }[m[2].toUpperCase()];
+  return isFinite(n) ? n * 1024 ** exp : 0;
+}
+
+const EZ_SORT_KEYS = {
+  se:      (t) => (t.season || 0) * 1000 + (t.episode || 0),
+  quality: (t) => parseInt(t.quality, 10) || 0,   // "1080p" → 1080; sin calidad → 0
+  size:    ezSizeBytes,
+  seeds:   (t) => (t.seeds != null ? t.seeds : -1),
+  peers:   (t) => (t.peers != null ? t.peers : -1),
+  date:    (t) => t.releasedAt || 0,
+};
+
+// Copia ordenada según ezEpSort (estable: a igual valor queda el orden de la
+// API). Sin orden activo devuelve el array tal cual.
+function ezSortedEps(torrents) {
+  const val = ezEpSort && EZ_SORT_KEYS[ezEpSort.key];
+  if (!val) return torrents;
+  return torrents.map((t, i) => ({ t, i, v: val(t) }))
+    .sort((a, b) => ((b.v - a.v) * ezEpSort.dir) || (a.i - b.i))
+    .map((x) => x.t);
+}
+
+// Encabezado de columna ordenable: la activa va resaltada con ▾ (desc) / ▴ (asc).
+function ezThHtml(key, label, cls = '', title = '') {
+  const on = ezEpSort && ezEpSort.key === key;
+  const arrow = on ? (ezEpSort.dir === 1 ? ' ▾' : ' ▴') : '';
+  return `<span class="${cls} ez-th js-ez-sort${on ? ' active' : ''}" data-k="${key}"
+    title="${title ? `${escapeHtml(title)} — ` : ''}ordenar">${label}${arrow}</span>`;
+}
+
 // Filas tracker: ♥, episodio, S·E, calidad, tamaño, seeds, leech, fecha, 🧲.
 // HTML + wiring separados para reusarlos en Favoritos y en las dos secciones
-// del modal de serie (cada contenedor con su propio array de torrents).
+// del modal de serie (cada contenedor con su propio array de torrents). Los
+// data-i indexan el array que se le pasa: si va ordenado, wireEzRows tiene
+// que recibir el mismo array ordenado (ver renderEzEpTable).
 function ezEpRowsHtml(torrents) {
   return `
     <div class="yify-tr yify-tr-head ez-tr">
       <span></span>
       <span>Episodio</span>
-      <span class="yify-td-num">S·E</span>
-      <span>Calidad</span>
-      <span class="yify-td-num">Tamaño</span>
-      <span class="yify-td-num" title="Seeders">Seeds</span>
-      <span class="yify-td-num" title="Leechers">Leech</span>
-      <span class="yify-td-num">Fecha</span>
+      ${ezThHtml('se', 'S·E', 'yify-td-num', 'Temporada · episodio')}
+      ${ezThHtml('quality', 'Calidad')}
+      ${ezThHtml('size', 'Tamaño', 'yify-td-num')}
+      ${ezThHtml('seeds', 'Seeds', 'yify-td-num', 'Seeders')}
+      ${ezThHtml('peers', 'Leech', 'yify-td-num', 'Leechers')}
+      ${ezThHtml('date', 'Fecha', 'yify-td-num')}
       <span></span>
     </div>` + torrents.map((t, i) => `
     <div class="yify-tr ez-tr">
@@ -2893,6 +3556,26 @@ function wireEzRows(container, torrents, showCtx) {
       b.classList.toggle('faved', on);
       b.title = on ? 'Quitar de favoritos' : 'Guardar en favoritos';
       if (ezFavsMode) loadEzFavs();   // en Favoritos la baja saca la fila
+    });
+  });
+}
+
+// Tabla de episodios del modal: ordena, pinta y cablea (filas + encabezados).
+// El click en un encabezado cambia el orden y re-renderiza TODAS las tablas
+// del modal (cada contenedor guarda su propio re-render en _ezRender).
+function renderEzEpTable(container, torrents, showCtx) {
+  const sorted = ezSortedEps(torrents);
+  container.innerHTML = ezEpRowsHtml(sorted);
+  wireEzRows(container, sorted, showCtx);
+  container._ezRender = () => renderEzEpTable(container, torrents, showCtx);
+  container.querySelectorAll('.js-ez-sort').forEach((h) => {
+    h.addEventListener('click', () => {
+      const k = h.dataset.k;
+      if (!ezEpSort || ezEpSort.key !== k) ezEpSort = { key: k, dir: 1 };
+      else if (ezEpSort.dir === 1) ezEpSort = { key: k, dir: -1 };
+      else ezEpSort = null;
+      try { localStorage.setItem('ezEpSort', JSON.stringify(ezEpSort)); } catch {}
+      document.querySelectorAll('.ez-modal-eplist').forEach((c) => { if (c._ezRender) c._ezRender(); });
     });
   });
 }
@@ -3057,7 +3740,7 @@ async function openEzShowModal(show) {
       <div id="ez-modal-tmdb"></div>
       ${recent.length ? `
         <div class="yify-cast-title">Subidos recientemente</div>
-        <div class="yify-table ez-modal-eplist ez-modal-recent" id="ez-modal-recent">${ezEpRowsHtml(recent)}</div>` : ''}
+        <div class="yify-table ez-modal-eplist ez-modal-recent" id="ez-modal-recent"></div>` : ''}
       <div class="yify-cast-title">Todos los episodios</div>
       <div class="yify-table ez-modal-eplist ez-modal-all" id="ez-modal-all"><div class="ai-loading">Buscando episodios…</div></div>
       <div class="yify-pager" id="ez-modal-more"></div>
@@ -3068,7 +3751,7 @@ async function openEzShowModal(show) {
   ezModalEl = overlay;
   overlay.querySelector('.js-ez-x').addEventListener('click', closeEzModal);
   const recentBox = overlay.querySelector('#ez-modal-recent');
-  if (recentBox) wireEzRows(recentBox, recent, show);
+  if (recentBox) renderEzEpTable(recentBox, recent, show);
 
   // tt id para el filtro: el del grupo, o búsqueda por nombre como fallback.
   const allBox = overlay.querySelector('#ez-modal-all');
@@ -3106,10 +3789,8 @@ async function openEzShowModal(show) {
       return;
     }
     loaded.push(...(r.torrents || []));
-    allBox.innerHTML = loaded.length
-      ? ezEpRowsHtml(loaded)
-      : `<div class="ai-loading">EZTV no tiene torrents de esta serie.</div>`;
-    wireEzRows(allBox, loaded, show);
+    if (loaded.length) renderEzEpTable(allBox, loaded, show);
+    else allBox.innerHTML = `<div class="ai-loading">EZTV no tiene torrents de esta serie.</div>`;
     const total = r.count || 0;
     if (loaded.length && loaded.length < total) {
       moreBox.innerHTML = `<button class="fin-btn js-ez-more">Cargar más (${loaded.length.toLocaleString('es-UY')} de ${total.toLocaleString('es-UY')})</button>`;
@@ -3201,12 +3882,23 @@ async function loadEzFavs() {
   const pager = $('ez-pager');
   if (pager) pager.innerHTML = '';
   if (el) el.innerHTML = `<div class="ai-loading">Cargando favoritos…</div>`;
-  let favs = [];
+  let favs = [], loadErr = null;
   try {
     const r = await window.api.sfavs.list();
     if (Array.isArray(r)) favs = r;
-  } catch {}
+    else loadErr = (r && r.error) || 'respuesta inválida';
+  } catch (e) { loadErr = (e && e.message) || String(e); }
   if (!ezFavsMode) return;   // salieron de la sección mientras cargaba
+  // Ídem películas: un error de la base local se muestra, no se disfraza de vacío.
+  if (loadErr) {
+    ezShown = [];
+    if (el) {
+      el.className = 'yify-grid';
+      el.innerHTML = `<div class="ai-loading">No se pudieron leer los favoritos: ${escapeHtml(loadErr)}. Nada se perdió — la copia vive en Mongo; reabrí el widget para regenerar la base local.</div>`;
+    }
+    adjustWindowSize();
+    return;
+  }
   ezFavIds = new Set(favs.map((f) => f.id));
   renderEzRows(favs);
 }
@@ -3215,7 +3907,7 @@ function setEzFavsMode(on) {
   ezFavsMode = !!on;
   const btn = $('ez-favs-btn');
   if (btn) btn.classList.toggle('active', ezFavsMode);
-  ['ez-search', 'ez-search-btn'].forEach((id) => {
+  ['ez-search', 'ez-search-clear', 'ez-search-btn'].forEach((id) => {
     const n = $(id);
     if (n) n.style.display = ezFavsMode ? 'none' : '';
   });
@@ -4215,6 +4907,11 @@ function planWeeklyCost(plan, pct) {
   return (pct / 100) * eq;
 }
 
+// Sheen duration for a usage bar (CSS --bar-speed): 3.4s when empty → 1s when full.
+function aiBarSpeed(pct) {
+  return (3.4 - 2.4 * Math.min(100, Math.max(0, pct)) / 100).toFixed(2);
+}
+
 function aiRow(label, pct, meta, countdownId) {
   if (pct == null) return '';
   const cls = aiBarClass(pct);
@@ -4224,7 +4921,7 @@ function aiRow(label, pct, meta, countdownId) {
         <span class="ai-row-label">${escapeHtml(label)}</span>
         <span class="ai-row-pct" style="color:${pctColor(pct)}">${pct}%</span>
       </div>
-      <div class="ai-row-track"><div class="ai-row-fill ${cls}" style="width:${Math.min(100, pct)}%"></div></div>
+      <div class="ai-row-track"><div class="ai-row-fill ${cls}" style="width:${Math.min(100, pct)}%;--bar-speed:${aiBarSpeed(pct)}s"></div></div>
       ${meta ? `<div class="ai-row-meta">${meta}</div>` : ''}
       ${countdownId ? `<div class="ai-row-meta">Reinicia en <span class="countdown-value" id="${countdownId}">—</span></div>` : ''}
     </div>`;
@@ -4293,21 +4990,119 @@ function renderLocalTokens(local) {
       </div>`;
   };
 
-  const todayCost = localApiCost(local.today);
   const weekCost  = localApiCost(local.week);
 
   return `
     <div class="local-section">
-      ${row('Hoy', local.today || {})}
       ${row('7 días', local.week || {})}
       ${sparkline()}
       <div class="api-cost" title="Costo API estimado para estos tokens al pricing de lista de Sonnet.">
-        Hoy ≈ <span class="api-cost-value">${fmtUSD(todayCost)}</span>
-        <span class="api-cost-sep">·</span>
         7d ≈ <span class="api-cost-value">${fmtUSD(weekCost)}</span>
         <span class="api-cost-suffix">API</span>
       </div>
     </div>`;
+}
+
+// Store only quota percentages and timestamps, separately for each provider.
+const AI_FORECAST_STORAGE_KEY = 'nexus.ai-weekly-forecast.v1';
+let aiWeeklyHistory = {};
+let aiForecastReadFailed = false;
+let aiForecastFetchedAt = 0;
+let aiForecastStorageAvailable = true;
+let aiForecastRenderedMinute = -1;
+try {
+  const saved = JSON.parse(localStorage.getItem(AI_FORECAST_STORAGE_KEY) || '{}');
+  for (const id of ['claude', 'codex']) aiWeeklyHistory[id] = AIUsageForecast.normalize(saved?.[id]);
+} catch { aiForecastStorageAvailable = false; }
+
+function captureAIWeeklySamples(fetchedAt) {
+  for (const [id, section] of [['claude', 'weekAll'], ['codex', 'weekly']]) {
+    const provider = aiData?.[id];
+    const quota = provider?.[section];
+    if (!aiData?.available || provider?.error || !quota) continue;
+    // The existing parsers also accept date-only strings; a quota forecast
+    // needs a real reset time, not their default midnight.
+    const hasTime = /\d{1,2}(?::\d{2})?\s*(am|pm)\b|\d{1,2}:\d{2}/i.test(quota.resets || '');
+    if (!hasTime) continue;
+    aiWeeklyHistory[id] = AIUsageForecast.recordSample(aiWeeklyHistory[id], {
+      at: fetchedAt.getTime(), pct: quota.pct, resetAt: quota.resetAt?.getTime(),
+    });
+  }
+  try {
+    localStorage.setItem(AI_FORECAST_STORAGE_KEY, JSON.stringify(aiWeeklyHistory));
+    aiForecastStorageAvailable = true;
+  } catch { aiForecastStorageAvailable = false; }
+}
+
+function forecastDuration(ms) {
+  if (ms <= 0) return 'ahora';
+  const minutes = Math.ceil(ms / 60000);
+  const days = Math.floor(minutes / 1440);
+  const hours = Math.floor((minutes % 1440) / 60);
+  if (days) return `${days}d ${hours}h`;
+  if (hours) return `${hours}h ${minutes % 60}m`;
+  return `${minutes}m`;
+}
+
+function renderAIWeeklyForecast(now = Date.now()) {
+  const percent = n => n.toLocaleString('es-UY', { maximumFractionDigits: 1 });
+  const rows = [['claude', 'Claude', 'weekAll'], ['codex', 'Codex', 'weekly']].map(([id, name, section]) => {
+    const quota = aiData?.[id]?.[section];
+    const result = AIUsageForecast.project(aiWeeklyHistory[id], now, {
+      maxAgeMs: Math.max(30 * 60000, AI_INTERVAL_MS * 2),
+      available: !aiForecastReadFailed && !!aiData?.available && !!quota && !aiData?.[id]?.error
+        && aiWeeklyHistory[id]?.at(-1)?.at === aiForecastFetchedAt,
+    });
+    const labels = {
+      unavailable: 'Sin datos semanales', resetting: 'Reinicio pendiente',
+      stale: 'Lectura desactualizada', exhausted: 'Cupo agotado',
+      learning: 'Reuniendo datos', risk: 'No llegás a este ritmo',
+      tight: 'Llegás justo', safe: 'Llegás con margen',
+    };
+    let details;
+    if (result.status === 'unavailable') {
+      details = '<p class="ai-forecast-note">Esperando porcentaje y fecha de reinicio.</p>';
+    } else if (result.status === 'resetting') {
+      details = '<p class="ai-forecast-note">El reinicio ya pasó. Esperando una nueva lectura.</p>';
+    } else if (result.status === 'stale') {
+      details = `<p class="ai-forecast-note">Última lectura: ${percent(result.pct)}% · hace ${forecastDuration(now - result.at)}. Actualizá AI Usage para renovar la previsión.</p>`;
+    } else if (result.status === 'exhausted') {
+      details = `<p class="ai-forecast-note">100% utilizado · reinicia en ${forecastDuration(result.remainingMs)}.</p>`;
+    } else if (result.status === 'learning') {
+      details = `<p class="ai-forecast-note">${percent(result.pct)}% utilizado. Falta historial para estimar el ritmo de esta semana.</p>`;
+    } else {
+      const date = new Date(result.resetAt).toLocaleString('es-UY', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+      const projectedWidth = Math.min(100, result.projectedPct);
+      // Bar animation speed follows the burn rate: 2s at exactly the available pace,
+      // faster when spending above it (clamped 0.5s–4s).
+      const pace = result.budgetPerDay > 0 ? result.ratePerDay / result.budgetPerDay : 1;
+      const barSpeed = Math.min(4, Math.max(0.5, 2 / (pace || 0.5))).toFixed(2);
+      const outcome = result.status === 'risk'
+        ? (result.exhaustionAt > now
+          ? `Se agotaría en ${forecastDuration(result.exhaustionAt - now)} · ${forecastDuration(result.resetAt - result.exhaustionAt)} antes del reinicio.`
+          : 'El cupo ya se habría agotado a este ritmo; actualizá para confirmar.')
+        : `Margen estimado al reinicio: ${percent(Math.max(0, 100 - result.projectedPct))}%.`;
+      details = `
+        <div class="ai-forecast-metrics"><span>Actual <b>${percent(result.pct)}%</b></span><span>Al reinicio <b>≈ ${percent(result.projectedPct)}%</b></span></div>
+        <div class="ai-forecast-track" style="--bar-speed:${barSpeed}s" aria-hidden="true"><span class="ai-forecast-projected" style="width:${projectedWidth}%"></span><span class="ai-forecast-used" style="width:${result.pct}%"></span></div>
+        <p class="ai-forecast-outcome">${outcome}</p>
+        <p class="ai-forecast-note" title="Porcentaje del cupo semanal por día. El disponible se calcula con el saldo y el tiempo restante en la última lectura.">Ritmo ≈ ${percent(result.ratePerDay)}%/día · Disponible ${percent(result.budgetPerDay)}%/día</p>
+        ${result.reductionPct ? `<p class="ai-forecast-outcome">Bajá el ritmo un ${result.reductionPct}% para llegar.</p>` : ''}
+        <p class="ai-forecast-note" title="${escapeHtml(date)}">Reinicia en ${forecastDuration(result.remainingMs)} · ${escapeHtml(date)}</p>`;
+    }
+    return `<div class="ai-forecast-row ${result.status}" data-provider="${id}"><div class="ai-forecast-head"><b>${name}</b><span class="ai-forecast-status">${labels[result.status]}</span></div>${details}</div>`;
+  }).join('');
+  return `<div class="ai-forecast-title"><div class="ai-provider">Previsión semanal</div><span>Estimación</span></div>
+    ${rows}
+    ${aiForecastStorageAvailable ? '' : '<p class="ai-forecast-note">Historial temporal: no se pudo guardar en este dispositivo.</p>'}`;
+}
+
+function tickAIWeeklyForecast(force = false) {
+  const el = $('ai-weekly-forecast');
+  const minute = Math.floor(Date.now() / 60000);
+  if (!el || (!force && minute === aiForecastRenderedMinute)) return;
+  aiForecastRenderedMinute = minute;
+  el.innerHTML = renderAIWeeklyForecast();
 }
 
 function aiSkeletonHTML() {
@@ -4334,6 +5129,25 @@ function aiSkeletonHTML() {
     </div>`;
 }
 
+// Brand marks for the provider headers (simple-icons paths, 24×24 viewBox).
+const AI_LOGOS = {
+  anthropic: 'M17.3041 3.541h-3.6718l6.696 16.918H24Zm-10.6082 0L0 20.459h3.7442l1.3693-3.5527h7.0052l1.3693 3.5528h3.7442L10.5363 3.5409Zm-.3712 10.2232 2.2914-5.9456 2.2914 5.9456Z',
+  openai: 'M22.2819 9.8211a5.9847 5.9847 0 0 0-.5157-4.9108 6.0462 6.0462 0 0 0-6.5098-2.9A6.0651 6.0651 0 0 0 4.9807 4.1818a5.9847 5.9847 0 0 0-3.9977 2.9 6.0462 6.0462 0 0 0 .7427 7.0966 5.98 5.98 0 0 0 .511 4.9107 6.051 6.051 0 0 0 6.5146 2.9001A5.9847 5.9847 0 0 0 13.2599 24a6.0557 6.0557 0 0 0 5.7718-4.2058 5.9894 5.9894 0 0 0 3.9977-2.9001 6.0557 6.0557 0 0 0-.7475-7.0729zm-9.022 12.6081a4.4755 4.4755 0 0 1-2.8764-1.0408l.1419-.0804 4.7783-2.7582a.7948.7948 0 0 0 .3927-.6813v-6.7369l2.02 1.1686a.071.071 0 0 1 .038.052v5.5826a4.504 4.504 0 0 1-4.4945 4.4944zm-9.6607-4.1254a4.4708 4.4708 0 0 1-.5346-3.0137l.142.0852 4.783 2.7582a.7712.7712 0 0 0 .7806 0l5.8428-3.3685v2.3324a.0804.0804 0 0 1-.0332.0615L9.74 19.9502a4.4992 4.4992 0 0 1-6.1408-1.6464zM2.3408 7.8956a4.485 4.485 0 0 1 2.3655-1.9728V11.6a.7664.7664 0 0 0 .3879.6765l5.8144 3.3543-2.0201 1.1685a.0757.0757 0 0 1-.071 0l-4.8303-2.7865A4.504 4.504 0 0 1 2.3408 7.872zm16.5963 3.8558L13.1038 8.364 15.1192 7.2a.0757.0757 0 0 1 .071 0l4.8303 2.7913a4.4944 4.4944 0 0 1-.6765 8.1042v-5.6772a.79.79 0 0 0-.407-.667zm2.0107-3.0231l-.142-.0852-4.7735-2.7818a.7759.7759 0 0 0-.7854 0L9.409 9.2297V6.8974a.0662.0662 0 0 1 .0284-.0615l4.8303-2.7866a4.4992 4.4992 0 0 1 6.6802 4.66zM8.3065 12.863l-2.02-1.1638a.0804.0804 0 0 1-.038-.0567V6.0742a4.4992 4.4992 0 0 1 7.3757-3.4537l-.142.0805L8.704 5.459a.7948.7948 0 0 0-.3927.6813zm1.0976-2.3654l2.602-1.4998 2.6069 1.4998v2.9994l-2.5974 1.4997-2.6067-1.4997Z',
+  elevenlabs: 'M4.6035 0v24h4.9317V0zm9.8613 0v24h4.9317V0z',
+};
+
+function aiLogo(brand) {
+  return `<svg class="ai-logo" viewBox="0 0 24 24" aria-hidden="true"><path d="${AI_LOGOS[brand]}"/></svg>`;
+}
+
+// Default model chip for a provider header: "Opus 5.5 - Xhigh", "gpt-6-sol · medium".
+function aiModelTag(model, sep = ' · ') {
+  if (!model || !(model.name || model.effort)) return '';
+  const label = [model.name || 'default', model.effort].filter(Boolean).join(sep);
+  const title = `Modelo por defecto${model.detail ? ' — ' + model.detail : ''}`;
+  return `<span class="ai-model" title="${escapeHtml(title)}">${escapeHtml(label)}</span>`;
+}
+
 function renderAI() {
   const el = $('ai-content');
   if (!aiData) {
@@ -4348,15 +5162,15 @@ function renderAI() {
   const providerBlocks = [];
   const c = aiData.claude;
   if (c) {
-    const parts = [`<div class="ai-provider">Claude${CLAUDE_PLAN ? ' · ' + CLAUDE_PLAN : ''}</div>`];
+    const parts = [`<div class="ai-provider">${aiLogo('anthropic')}Claude${CLAUDE_PLAN ? ' · ' + CLAUDE_PLAN : ''}${aiModelTag(c.model, ' - ')}</div>`];
     if (c.session)    parts.push(aiRow('Sesión',         c.session.pct, '',                                                        'cd-session'));
     if (c.weekAll)    parts.push(aiRow('Semana (todos)', c.weekAll.pct, '',                                                        'cd-week'));
     if (c.weekSonnet) parts.push(aiRow('Semana (Sonnet)', c.weekSonnet.pct, ''));
     if (c.weekFable)  parts.push(aiRow('Semana (Fable)',  c.weekFable.pct,  ''));
-    if (c.extra)      parts.push(aiRow('Extra',          c.extra.pct,   `<span style="color:#d4d4d8;font-weight:600;">$${c.extra.spent}</span> / $${c.extra.total} gastado`, 'cd-extra'));
+    if (c.extra)      parts.push(aiRow('Extra',          c.extra.pct,   `<span style="color:var(--text-2);font-weight:600;">$${c.extra.spent}</span> / $${c.extra.total} gastado`, 'cd-extra'));
 
     if (c.insight) {
-      parts.push(`<div class="ai-row-meta" style="margin-top:6px;color:#fbbf24;">⚡ ${escapeHtml(c.insight)}</div>`);
+      parts.push(`<div class="ai-row-meta" style="margin-top:6px;color:var(--warn-2);">⚡ ${escapeHtml(c.insight)}</div>`);
     }
 
     if (c.weekAll) {
@@ -4376,7 +5190,7 @@ function renderAI() {
   const cx = aiData.codex;
   if (cx) {
     const plan = cx.account?.plan;
-    const parts = [`<div class="ai-provider">Codex${plan ? ' · ' + escapeHtml(plan) : ''}</div>`];
+    const parts = [`<div class="ai-provider">${aiLogo('openai')}Codex${plan ? ' · ' + escapeHtml(plan) : ''}${aiModelTag(cx.model)}</div>`];
     if (cx.session5h) parts.push(aiRow('5h limit', cx.session5h.pct, '', 'cd-codex-5h'));
     if (cx.weekly)    parts.push(aiRow('Semanal',  cx.weekly.pct,    '', 'cd-codex-week'));
 
@@ -4396,25 +5210,25 @@ function renderAI() {
 
   const el11 = aiData.eleven;
   if (el11 && el11.characters && el11.characters.pct != null) {
-    const parts = [`<div class="ai-provider">ElevenLabs${el11.tier ? ' · ' + escapeHtml(el11.tier) : ''}</div>`];
+    const parts = [`<div class="ai-provider">${aiLogo('elevenlabs')}ElevenLabs${el11.tier ? ' · ' + escapeHtml(el11.tier) : ''}</div>`];
     parts.push(aiRow(
       'Caracteres',
       el11.characters.pct,
-      `<span style="color:#d4d4d8;font-weight:600;">${fmtNum(el11.characters.used)}</span> / ${fmtNum(el11.characters.limit)} usados`,
+      `<span style="color:var(--text-2);font-weight:600;">${fmtNum(el11.characters.used)}</span> / ${fmtNum(el11.characters.limit)} usados`,
       el11.resetUnix ? 'cd-eleven' : null,
     ));
     if (el11.voices && el11.voices.limit != null) {
-      parts.push(`<div class="ai-row-meta">Voice slots: <b style="color:#d4d4d8">${el11.voices.used ?? 0} / ${el11.voices.limit}</b></div>`);
+      parts.push(`<div class="ai-row-meta">Voice slots: <b style="color:var(--text-2)">${el11.voices.used ?? 0} / ${el11.voices.limit}</b></div>`);
     }
     providerBlocks.push(`<div class="ai-stack-item">${parts.join('')}</div>`);
   }
 
-  // Left column: Claude / Codex / ElevenLabs stacked. Right column: Local Tokens.
+  // Right column: Local Tokens, followed by the weekly quota forecast.
   const cols = [];
   if (providerBlocks.length) cols.push(`<div class="ai-col">${providerBlocks.join('')}</div>`);
-  if (aiData.local) {
-    cols.push(`<div class="ai-col"><div class="ai-provider">Local Tokens</div>${renderLocalTokens(aiData.local)}</div>`);
-  }
+  const localTokens = aiData.local
+    ? `<div class="ai-provider">Local Tokens</div>${renderLocalTokens(aiData.local)}` : '';
+  cols.push(`<div class="ai-col">${localTokens}<section class="ai-forecast" id="ai-weekly-forecast" aria-label="Previsión semanal de uso de IA"></section></div>`);
 
   if (!cols.length) {
     el.innerHTML = `<div class="ai-loading">Sin datos de uso (¿logueaste claude/codex?)</div>`;
@@ -4423,6 +5237,7 @@ function renderAI() {
   }
 
   tickCountdowns();
+  tickAIWeeklyForecast(true);
   adjustWindowSize();
 }
 
@@ -4486,17 +5301,21 @@ async function refreshAI() {
   btn.classList.add('spinning');
   if (!aiData) renderAI(); // paint skeleton while the first fetch is in flight
   try {
-    aiData = await window.api.fetchAIUsage();
+    const next = await window.api.fetchAIUsage();
+    if (!next?.available) throw new Error('AI usage unavailable');
+    aiData = next;
+    const fetchedAt = new Date();
+    aiForecastReadFailed = false;
+    aiForecastFetchedAt = fetchedAt.getTime();
+    attachResetDates(aiData.claude, parseResetDate,      ['session', 'weekAll', 'extra'], fetchedAt);
+    attachResetDates(aiData.codex,  parseCodexResetDate, ['session5h', 'weekly'],         fetchedAt);
+    captureAIWeeklySamples(fetchedAt);
   } catch {
+    aiForecastReadFailed = true;
     aiData = aiData || { available: false };
   } finally {
     btn.classList.remove('spinning');
     aiFetching = false;
-  }
-  const fetchedAt = new Date();
-  if (aiData) {
-    attachResetDates(aiData.claude, parseResetDate,      ['session', 'weekAll', 'extra'], fetchedAt);
-    attachResetDates(aiData.codex,  parseCodexResetDate, ['session5h', 'weekly'],         fetchedAt);
   }
   renderAI();
   // Push to main process so the tray icon + tooltip stay in sync.
@@ -4529,6 +5348,7 @@ let apiKeys = [];
 const keysList   = $('keys-list');
 const keyName    = $('key-name');
 const keyValue   = $('key-value');
+const keyUrl     = $('key-url');
 const keyAddBtn  = $('key-add-btn');
 const keyStatus  = $('key-status');
 
@@ -4536,6 +5356,21 @@ function maskKey(key) {
   if (!key) return '';
   if (key.length <= 8) return '•'.repeat(key.length);
   return key.slice(0, 4) + '•'.repeat(Math.max(8, key.length - 8)) + key.slice(-4);
+}
+
+// Link opcional de una entrada (dashboard del servicio, docs…). Devuelve ''
+// si está vacío, null si no es una URL http(s) válida; sin esquema asume https.
+function normalizeKeyUrl(raw) {
+  const v = String(raw || '').trim();
+  if (!v) return '';
+  try {
+    const u = new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(v) ? v : `https://${v}`);
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return null;
+    if (!u.hostname.includes('.') && u.hostname !== 'localhost') return null;
+    return u.href;
+  } catch {
+    return null;
+  }
 }
 
 function setKeyStatus(msg, kind) {
@@ -4558,6 +5393,20 @@ function renderKeys() {
     return;
   }
   keysList.innerHTML = apiKeys.map((k, idx) => {
+    if (k._editing) {
+      return `
+      <div class="key-card editing" data-idx="${idx}">
+        <div class="key-card-head">
+          <input class="key-input key-edit-input js-edit-name" value="${escapeHtml(k.name)}" placeholder="Nombre" autocomplete="off">
+          <div class="key-card-actions">
+            <button class="key-icon-btn ok js-save" title="Guardar">✓</button>
+            <button class="key-icon-btn js-cancel" title="Cancelar">↩</button>
+          </div>
+        </div>
+        <input class="key-input key-edit-input mono js-edit-key" value="${escapeHtml(k.key)}" placeholder="API key" autocomplete="off" spellcheck="false">
+        <input class="key-input key-edit-input js-edit-url" value="${escapeHtml(k.url || '')}" placeholder="Link (opcional)" autocomplete="off" spellcheck="false">
+      </div>`;
+    }
     const visible = !!k._visible;
     const display = visible ? k.key : maskKey(k.key);
     return `
@@ -4567,6 +5416,8 @@ function renderKeys() {
           <div class="key-card-actions">
             <button class="key-icon-btn js-toggle" title="${visible ? 'Ocultar' : 'Ver'}">${visible ? '🙈' : '👁'}</button>
             <button class="key-icon-btn js-copy" title="Copiar">⧉</button>
+            ${k.url ? `<button class="key-icon-btn js-link" title="${escapeHtml(k.url)}">↗</button>` : ''}
+            <button class="key-icon-btn js-edit" title="Editar">✎</button>
             <button class="key-icon-btn danger js-delete" title="Borrar">✕</button>
           </div>
         </div>
@@ -4577,6 +5428,66 @@ function renderKeys() {
 
   keysList.querySelectorAll('.key-card').forEach((card) => {
     const idx = +card.dataset.idx;
+    if (apiKeys[idx]._editing) {
+      const nameEl = card.querySelector('.js-edit-name');
+      const keyEl = card.querySelector('.js-edit-key');
+      const urlEl = card.querySelector('.js-edit-url');
+      const cancel = () => {
+        apiKeys[idx]._editing = false;
+        renderKeys();
+      };
+      const save = async () => {
+        const name = nameEl.value.trim();
+        const key = keyEl.value.trim();
+        if (!name || !key) {
+          setKeyStatus('Nombre y key son obligatorios', 'error');
+          return;
+        }
+        if (apiKeys.some((k, i) => i !== idx && k.name.toLowerCase() === name.toLowerCase())) {
+          setKeyStatus('Ya existe una key con ese nombre', 'error');
+          return;
+        }
+        const url = normalizeKeyUrl(urlEl.value);
+        if (url === null) {
+          setKeyStatus('El link no es una URL válida', 'error');
+          return;
+        }
+        const cur = apiKeys[idx];
+        const was = keyServiceOf(cur.name);
+        const changed = cur.name !== name || cur.key !== key;
+        const urlChanged = (cur.url || '') !== url;
+        cur.name = name;
+        cur.key = key;
+        cur.url = url;
+        cur._editing = false;
+        if (changed || urlChanged) {
+          await persistKeys();
+          setKeyStatus('Actualizada', 'success');
+        }
+        renderKeys();
+        if (changed) {
+          const now = keyServiceOf(name);
+          refreshKeyService(was);
+          if (now !== was) refreshKeyService(now);
+        }
+      };
+      card.querySelector('.js-save').addEventListener('click', save);
+      card.querySelector('.js-cancel').addEventListener('click', cancel);
+      [nameEl, keyEl, urlEl].forEach((el) => el.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') save();
+        else if (e.key === 'Escape') cancel();
+      }));
+      return;
+    }
+    card.querySelector('.js-edit').addEventListener('click', () => {
+      apiKeys.forEach((k) => { k._editing = false; });
+      apiKeys[idx]._editing = true;
+      renderKeys();
+      const nameEl = keysList.querySelector(`.key-card[data-idx="${idx}"] .js-edit-name`);
+      if (nameEl) { nameEl.focus(); nameEl.select(); }
+    });
+    const linkBtn = card.querySelector('.js-link');
+    if (linkBtn) linkBtn.addEventListener('click', () => window.api.openExternal(apiKeys[idx].url));
     card.querySelector('.js-toggle').addEventListener('click', () => {
       apiKeys[idx]._visible = !apiKeys[idx]._visible;
       renderKeys();
@@ -4596,13 +5507,11 @@ function renderKeys() {
       }
     });
     card.querySelector('.js-delete').addEventListener('click', async () => {
-      const was = (apiKeys[idx].name || '').toLowerCase();
+      const was = keyServiceOf(apiKeys[idx].name);
       apiKeys.splice(idx, 1);
       await persistKeys();
       renderKeys();
-      if (was === 'elevenlabs') refreshAI();
-      if (was === 'finnhub') refreshStocks();
-      if (was === 'github' && ghStarted) loadGithub();
+      refreshKeyService(was);
     });
   });
 }
@@ -4614,6 +5523,7 @@ async function loadKeys() {
       id: k.id || `k-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       name: k.name || '',
       key: k.key || '',
+      url: normalizeKeyUrl(k.url) || '',
       _visible: false,
     }));
     renderKeys();
@@ -4624,7 +5534,7 @@ async function loadKeys() {
 }
 
 async function persistKeys() {
-  const payload = apiKeys.map(({ id, name, key }) => ({ id, name, key }));
+  const payload = apiKeys.map(({ id, name, key, url }) => (url ? { id, name, key, url } : { id, name, key }));
   try {
     await window.api.saveApiKeys(payload);
   } catch {
@@ -4643,24 +5553,46 @@ keyAddBtn.addEventListener('click', async () => {
     setKeyStatus('Ya existe una key con ese nombre', 'error');
     return;
   }
+  const url = normalizeKeyUrl(keyUrl.value);
+  if (url === null) {
+    setKeyStatus('El link no es una URL válida', 'error');
+    return;
+  }
   apiKeys.push({
     id: `k-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-    name, key, _visible: false,
+    name, key, url, _visible: false,
   });
   await persistKeys();
   keyName.value = '';
   keyValue.value = '';
+  keyUrl.value = '';
   setKeyStatus('Agregada', 'success');
   renderKeys();
-  const lower = name.toLowerCase();
-  if (lower === 'elevenlabs') refreshAI();
-  if (lower === 'finnhub') refreshStocks();
-  if (lower === 'github' && ghStarted) loadGithub();
+  refreshKeyService(keyServiceOf(name));
 });
 
-keyValue.addEventListener('keydown', (e) => {
+// Refresca la card del widget que depende de la key de ese servicio.
+function refreshKeyService(svc) {
+  if (svc === 'elevenlabs') refreshAI();
+  if (svc === 'finnhub') refreshStocks();
+  if (svc === 'github' && ghStarted) loadGithub();
+}
+
+// Servicio al que conecta una key por su nombre, con la misma tolerancia que
+// main (findApiKey en config.js): "ElevenLabs Api" → elevenlabs, "Finnhub
+// key" → finnhub. Decide qué card refrescar al agregar o borrar una key.
+function keyServiceOf(name) {
+  const n = String(name || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  if (n.includes('eleven') || n.includes('11labs')) return 'elevenlabs';
+  if (n.includes('finnhub')) return 'finnhub';
+  if (n.includes('github') || n === 'gh') return 'github';
+  if (n.includes('tmdb') || n.includes('moviedatabase') || n.includes('movedatabase') || n.includes('moviedb')) return 'tmdb';
+  return n;
+}
+
+[keyValue, keyUrl].forEach((el) => el.addEventListener('keydown', (e) => {
   if (e.key === 'Enter') keyAddBtn.click();
-});
+}));
 
 // ── Finanzas ───────────────────────────────────────────────────
 const finAccountsEl = $('fin-accounts');
@@ -6125,7 +7057,38 @@ async function renderFinanzas() {
 
 // ── Settings ───────────────────────────────────────────────────
 const autoLaunchCheckbox = $('setting-autolaunch');
+const alwaysOnTopCheckbox = $('setting-alwaysontop');
+if (alwaysOnTopCheckbox) alwaysOnTopCheckbox.addEventListener('change', async () => {
+  const desired = alwaysOnTopCheckbox.checked;
+  try {
+    const actual = await window.api.setAlwaysOnTop(desired);
+    alwaysOnTopCheckbox.checked = !!actual;
+  } catch {
+    alwaysOnTopCheckbox.checked = !desired;
+  }
+});
 const settingStatus = $('setting-status');
+
+// Toggles de animaciones (barras de AI Usage, fondo de Clima): preferencia
+// visual, vive en localStorage y se aplica como clase del body. Sin elegir,
+// sigue "reducir movimiento" del sistema.
+function bindAnimToggle(checkboxId, storageKey, bodyClass) {
+  const checkbox = $(checkboxId);
+  let on = !window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  try {
+    const saved = localStorage.getItem(storageKey);
+    if (saved != null) on = saved === '1';
+  } catch {}
+  document.body.classList.toggle(bodyClass, on);
+  if (!checkbox) return;
+  checkbox.checked = on;
+  checkbox.addEventListener('change', () => {
+    document.body.classList.toggle(bodyClass, checkbox.checked);
+    try { localStorage.setItem(storageKey, checkbox.checked ? '1' : '0'); } catch {}
+  });
+}
+bindAnimToggle('setting-baranim', 'barAnim', 'bar-anim');
+bindAnimToggle('setting-wxanim', 'wxAnim', 'wx-anim');
 
 function setSettingStatus(msg, kind) {
   settingStatus.textContent = msg || '';
@@ -6146,6 +7109,12 @@ async function loadSettings() {
     autoLaunchCheckbox.checked = !!enabled;
   } catch {
     autoLaunchCheckbox.checked = false;
+  }
+  // "Siempre adelante" también se puede cambiar desde la bandeja: se relee
+  // cada vez que se abre Settings.
+  if (alwaysOnTopCheckbox) {
+    try { alwaysOnTopCheckbox.checked = !!(await window.api.getAlwaysOnTop()); }
+    catch { alwaysOnTopCheckbox.checked = false; }
   }
   loadMongoStatus();
   loadApiStatuses();
@@ -6403,7 +7372,7 @@ autoLaunchCheckbox.addEventListener('change', async () => {
   } catch {}
 
   updateClock();
-  setInterval(() => { updateClock(); tickCountdowns(); updateAINextCountdown(); }, 1000);
+  setInterval(() => { updateClock(); tickCountdowns(); updateAINextCountdown(); tickAIWeeklyForecast(); }, 1000);
 
   await refreshSystem();
   setInterval(refreshSystem, SYS_INTERVAL_MS);
