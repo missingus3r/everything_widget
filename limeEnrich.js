@@ -20,4 +20,13 @@ function enrichmentPatch(local, remote) {
   return Object.keys(patch).length ? patch : null;
 }
 
-module.exports = { ENRICH_FIELDS, enrichmentPatch };
+// El $set del ingest refresca seeds/peers de releases ya archivados, que no se
+// vuelven a enriquecer: sin esto mandaba name/imdb/cover en null y borraba en
+// Mongo la ficha (en SQLite no, ahí el upsert usa COALESCE).
+function withoutNullEnrichment(mut) {
+  const out = { ...mut };
+  for (const k of ENRICH_FIELDS) if (out[k] == null) delete out[k];
+  return out;
+}
+
+module.exports = { ENRICH_FIELDS, enrichmentPatch, withoutNullEnrichment };

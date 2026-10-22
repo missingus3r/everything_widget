@@ -17,7 +17,7 @@
 const path = require('path');
 const mongo = require('./finances/mongo');
 const sqliteFile = require('./sqliteFile');
-const { ENRICH_FIELDS, enrichmentPatch } = require('./limeEnrich');
+const { ENRICH_FIELDS, enrichmentPatch, withoutNullEnrichment } = require('./limeEnrich');
 
 const DB_PATH = path.join(__dirname, 'lime.sqlite');
 const WASM_PATH = path.join(__dirname, 'node_modules', 'sql.js', 'dist');
@@ -204,7 +204,7 @@ async function ingest(cat, releases) {
         const { _id, added_at, ...mut } = doc;
         // added_at solo al insertar (conserva cuándo se vio por primera vez);
         // el resto se refresca (seeds/peers/enriquecimiento).
-        return { updateOne: { filter: { _id }, update: { $set: mut, $setOnInsert: { added_at } }, upsert: true } };
+        return { updateOne: { filter: { _id }, update: { $set: withoutNullEnrichment(mut), $setOnInsert: { added_at } }, upsert: true } };
       }), { ordered: false });
     }
   } catch (e) { console.warn('[limeArchive] mongo upsert failed:', e.message); }

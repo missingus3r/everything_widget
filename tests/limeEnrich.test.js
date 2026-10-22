@@ -19,3 +19,11 @@ test('sin nada que completar devuelve null', () => {
   assert.equal(enrichmentPatch({ name: null }, { name: null }), null);
   assert.deepEqual(ENRICH_FIELDS, ['name', 'year', 'imdb', 'imdb_title', 'imdb_year', 'cover']);
 });
+
+test('el $set del ingest no pisa en Mongo el enriquecimiento con nulos', () => {
+  const { withoutNullEnrichment } = require('../limeEnrich');
+  const mut = { cat: 'movies', title: 'X 2025 1080p', seeds: 9, name: null, year: undefined, imdb: null, imdb_title: null, imdb_year: null, cover: null };
+  assert.deepEqual(withoutNullEnrichment(mut), { cat: 'movies', title: 'X 2025 1080p', seeds: 9 });
+  const full = { seeds: 1, name: 'X', imdb: 'tt1', cover: 'https://p' };
+  assert.deepEqual(withoutNullEnrichment(full), full);
+});
