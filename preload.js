@@ -24,6 +24,8 @@ contextBridge.exposeInMainWorld('api', {
   sendElevenUsage: (data) => ipcRenderer.send('eleven-usage-updated', data),
   onRefresh:       (cb)   => ipcRenderer.on('trigger-refresh', cb),
   onDbSynced:      (cb)   => ipcRenderer.on('db-synced', (_e, info) => cb(info)),
+  onFavsSynced:    (cb)   => ipcRenderer.on('favs-synced', (_e, info) => cb(info)),
+  publishForecast: (f)    => ipcRenderer.send('pc-status:forecast', f),
 
   finances: {
     getState:     ()        => ipcRenderer.invoke('finances:get-state'),

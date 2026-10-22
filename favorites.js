@@ -19,6 +19,7 @@ const path = require('path');
 const https = require('https');
 const mongo = require('./finances/mongo');
 const sqliteFile = require('./sqliteFile');
+const { FAV_DELETIONS, tombId, tombDoc, splitTombstoned, remoteTombstoned } = require('./favSync');
 
 const DB_PATH = path.join(__dirname, 'favorites.sqlite');
 const WASM_PATH = path.join(__dirname, 'node_modules', 'sql.js', 'dist');
@@ -125,8 +126,25 @@ async function favCols() {
         movies: dbh.collection(COLLECTION),
         series: dbh.collection(SERIES_COLLECTION),
         folders: dbh.collection(FOLDERS_COLLECTION),
+        deletions: dbh.collection(FAV_DELETIONS),
       }
     : null;
+}
+
+// Tombstones (ver favSync.js): un borrado deja su marca para que reconcile()
+// no lo resucite desde otro espejo; volver a agregar la quita. Best-effort,
+// como el resto de las escrituras a Mongo.
+async function tomb(cols, kind, ids) {
+  if (!cols || !ids.length) return;
+  const now = Date.now();
+  await cols.deletions.bulkWrite(ids.map((id) => ({
+    replaceOne: { filter: { _id: tombId(kind, id) }, replacement: tombDoc(kind, id, now), upsert: true },
+  })), { ordered: false });
+}
+
+async function untomb(cols, kind, ids) {
+  if (!cols || !ids.length) return;
+  await cols.deletions.deleteMany({ _id: { $in: ids.map((id) => tombId(kind, id)) } });
 }
 
 // ── Conversión entre el "fav" canónico, la fila SQLite y el doc Mongo ────────
@@ -379,43 +397,114 @@ function readSeriesRows() {
   return rows;
 }
 
-// ── Reconciliación (arranque + periódica), SIEMPRE aditiva ───────────────────
+// ── Reconciliación (arranque + periódica) ────────────────────────────────────
 // Sube los favoritos que Mongo no tiene ($setOnInsert preserva lo creado
 // offline sin pisar lo remoto) y baja lo remoto con merge: writeRow es
-// INSERT OR REPLACE, así que lo remoto actualiza filas con el mismo id y lo
-// solo-local queda intacto — nunca se borra nada de ningún lado. Una base
-// recién instalada baja todo; una Mongo vacía recibe todo lo local.
+// INSERT OR REPLACE, así que lo remoto actualiza filas con el mismo id. Lo
+// único que se borra es lo que tiene tombstone en `fav_deletions` (borrado
+// desde otro dispositivo): esas filas locales se van en vez de resubirse.
+// Una base recién instalada baja todo; una Mongo vacía recibe todo lo local.
 // Cubre películas (YIFY + LimeTorrents), episodios (EZTV) y carpetas.
-async function reconcile() {
+//
+// Corre al arrancar y cada pocos minutos (main.js), así que baja los docs sin
+// portadas y pide aparte solo las que el espejo todavía no tiene. Devuelve
+// `changed` para que el renderer repinte solo si algo cambió. Dos llamadas a
+// la vez comparten la misma pasada.
+let reconciling = null;
+function reconcile() {
+  if (!reconciling) {
+    reconciling = reconcileOnce().finally(() => { reconciling = null; });
+  }
+  return reconciling;
+}
+
+// Firma de las tres tablas sin los binarios: alcanza para saber si cambió algo.
+function signature() {
+  const lite = (rows, bin) => JSON.stringify(rows.map((r) => ({ ...r, [bin]: r[bin] ? r[bin].length : 0 })));
+  return lite(readRows(), 'cover') + lite(readSeriesRows(), 'image') + JSON.stringify(readFolderRows());
+}
+
+async function reconcileOnce() {
   try {
     const cols = await favCols();
-    if (!cols) return;
+    if (!cols) return null;
+    const before = signature();
+    const tombs = await cols.deletions.find({}).toArray();
+    const movies = splitTombstoned(readRows(), tombs, 'movie');
+    const series = splitTombstoned(readSeriesRows(), tombs, 'series');
+    const folders = splitTombstoned(readFolderRows(), tombs, 'folder');
+    if (movies.drop.length || series.drop.length || folders.drop.length) {
+      movies.drop.forEach((id) => db.run('DELETE FROM favorites WHERE id = ?', [id]));
+      series.drop.forEach((id) => db.run('DELETE FROM series_favorites WHERE id = ?', [id]));
+      folders.drop.forEach((id) => db.run('DELETE FROM fav_folders WHERE id = ?', [id]));
+    }
+    // Re-altas posteriores al borrado (p. ej. hechas sin conexión): se quedan,
+    // se suben y pierden la marca.
+    await untomb(cols, 'movie', movies.revived);
+    await untomb(cols, 'series', series.revived);
+    await untomb(cols, 'folder', folders.revived);
     const seedUp = async (col, locals, toDoc) => {
       if (!locals.length) return;
       await col.bulkWrite(locals.map((f) => ({
         updateOne: { filter: { _id: f.id }, update: { $setOnInsert: toDoc(f) }, upsert: true },
       })), { ordered: false });
     };
-    await seedUp(cols.movies, readRows(), favToDoc);
-    await seedUp(cols.series, readSeriesRows(), sfavToDoc);
-    await seedUp(cols.folders, readFolderRows(), folderToDoc);
-    const [movieDocs, seriesDocs, folderDocs] = await Promise.all([
-      cols.movies.find({}).toArray(),
-      cols.series.find({}).toArray(),
+    await seedUp(cols.movies, movies.keep, favToDoc);
+    await seedUp(cols.series, series.keep, sfavToDoc);
+    await seedUp(cols.folders, folders.keep, folderToDoc);
+    const fetched = await Promise.all([
+      cols.movies.find({}, { projection: { cover: 0 } }).toArray(),
+      cols.series.find({}, { projection: { image: 0 } }).toArray(),
       cols.folders.find({}).toArray(),
     ]);
+    // Docs vivos con tombstone (un borrado que se cruzó con un $setOnInsert
+    // de otro dispositivo): se terminan de borrar y no bajan al espejo.
+    const [movieDocs, seriesDocs, folderDocs] = await Promise.all(
+      [[cols.movies, 'movie'], [cols.series, 'series'], [cols.folders, 'folder']].map(async ([col, kind], i) => {
+        const { dead, revived } = remoteTombstoned(fetched[i], tombs, kind);
+        await untomb(cols, kind, revived);
+        if (!dead.length) return fetched[i];
+        await col.deleteMany({ _id: { $in: dead } });
+        const gone = new Set(dead);
+        return fetched[i].filter((d) => !gone.has(Number(d._id)));
+      }));
+    // Binarios: se conservan los del espejo y se bajan solo los que faltan.
+    const localMovies = new Map(readRows().map((f) => [f.id, f]));
+    const localSeries = new Map(readSeriesRows().map((f) => [f.id, f]));
+    const missingCovers = movieDocs.map((d) => Number(d._id)).filter((id) => !(localMovies.get(id) || {}).cover);
+    const missingImages = seriesDocs.map((d) => Number(d._id)).filter((id) => !(localSeries.get(id) || {}).image);
+    const [coverDocs, imageDocs] = await Promise.all([
+      missingCovers.length
+        ? cols.movies.find({ _id: { $in: missingCovers }, cover: { $ne: null } }, { projection: { cover: 1, cover_mime: 1 } }).toArray()
+        : [],
+      missingImages.length
+        ? cols.series.find({ _id: { $in: missingImages }, image: { $ne: null } }, { projection: { image: 1, image_mime: 1 } }).toArray()
+        : [],
+    ]);
+    const covers = new Map(coverDocs.map((d) => [Number(d._id), d]));
+    const images = new Map(imageDocs.map((d) => [Number(d._id), d]));
     db.run('BEGIN TRANSACTION');
     try {
       folderDocs.forEach((d) => writeFolderRow(docToFolder(d)));
-      // Un doc remoto sin imdb (guardado antes de la columna) no borra el
-      // que ya se completó acá.
-      const localImdb = new Map(readRows().map((f) => [f.id, f.imdb]));
       movieDocs.forEach((d) => {
-        const f = docToFav(d);
-        if (!f.imdb) f.imdb = localImdb.get(f.id) || null;
+        const id = Number(d._id);
+        const local = localMovies.get(id);
+        const bin = covers.get(id);
+        const f = docToFav(bin ? { ...d, cover: bin.cover, cover_mime: bin.cover_mime } : d);
+        if (!bin && local && local.cover) { f.cover = local.cover; f.coverMime = local.coverMime; }
+        // Un doc remoto sin imdb (guardado antes de la columna) no borra el
+        // que ya se completó acá.
+        if (!f.imdb) f.imdb = (local && local.imdb) || null;
         writeRow(f);
       });
-      seriesDocs.forEach((d) => writeSeriesRow(docToSfav(d)));
+      seriesDocs.forEach((d) => {
+        const id = Number(d._id);
+        const local = localSeries.get(id);
+        const bin = images.get(id);
+        const f = docToSfav(bin ? { ...d, image: bin.image, image_mime: bin.image_mime } : d);
+        if (!bin && local && local.image) { f.image = local.image; f.imageMime = local.imageMime; }
+        writeSeriesRow(f);
+      });
       // Referencias a carpetas que no existen en el conjunto final (local ∪
       // remoto) vuelven a la raíz — evita huérfanos sin borrar películas.
       const ids = readFolderRows().map((f) => Number(f.id));
@@ -428,9 +517,12 @@ async function reconcile() {
       throw err;
     }
     persist();
-    console.log(`[favorites] synced with Mongo: ${movieDocs.length} películas, ${seriesDocs.length} series, ${folderDocs.length} carpetas`);
+    const changed = signature() !== before;
+    console.log(`[favorites] synced with Mongo: ${movieDocs.length} películas, ${seriesDocs.length} series, ${folderDocs.length} carpetas${changed ? ' (con cambios)' : ''}`);
+    return { changed, movies: movieDocs.length, series: seriesDocs.length, folders: folderDocs.length };
   } catch (e) {
     console.warn('[favorites] mongo sync failed, SQLite-only:', e.message);
+    return null;
   }
 }
 
@@ -534,7 +626,10 @@ async function add(movie) {
   persist();
   try {
     const cols = await favCols();
-    if (cols) await cols.movies.updateOne({ _id: fav.id }, { $set: favToDoc(fav) }, { upsert: true });
+    if (cols) {
+      await cols.movies.updateOne({ _id: fav.id }, { $set: favToDoc(fav) }, { upsert: true });
+      await untomb(cols, 'movie', [...new Set([fav.id, incoming.id])]);
+    }
   } catch (e) { console.warn('[favorites] mongo upsert failed:', e.message); }
   // Si además había otro registro con el mismo imdb (duplicado viejo), se funde ya.
   if (fav.imdb) await dedupeByImdb(fav.imdb);
@@ -558,7 +653,10 @@ async function remove(key) {
   persist();
   try {
     const cols = await favCols();
-    if (cols && ids.size) await cols.movies.deleteMany({ _id: { $in: [...ids] } });
+    if (cols && ids.size) {
+      await cols.movies.deleteMany({ _id: { $in: [...ids] } });
+      await tomb(cols, 'movie', [...ids]);
+    }
   } catch (e) { console.warn('[favorites] mongo delete failed:', e.message); }
 }
 
@@ -670,6 +768,7 @@ async function dedupeByImdb(onlyImdb = null) {
     if (cols) {
       for (const fav of kept) await cols.movies.updateOne({ _id: fav.id }, { $set: favToDoc(fav) }, { upsert: true });
       await cols.movies.deleteMany({ _id: { $in: removed } });
+      await tomb(cols, 'movie', removed);
     }
   } catch (e) { console.warn('[favorites] mongo dedupe failed:', e.message); }
   return { merged: kept.length, removed: removed.length };
@@ -694,7 +793,10 @@ async function createFolder(name, parentId = null) {
   persist();
   try {
     const cols = await favCols();
-    if (cols) await cols.folders.updateOne({ _id: folder.id }, { $set: folderToDoc(folder) }, { upsert: true });
+    if (cols) {
+      await cols.folders.updateOne({ _id: folder.id }, { $set: folderToDoc(folder) }, { upsert: true });
+      await untomb(cols, 'folder', [folder.id]);
+    }
   } catch (e) { console.warn('[favorites] mongo folder create failed:', e.message); }
   return folder;
 }
@@ -727,6 +829,7 @@ async function deleteFolder(folderId) {
       await cols.movies.updateMany({ folder_id: fid }, { $set: { folder_id: null } });
       await cols.folders.updateMany({ parent_id: fid }, { $set: { parent_id: null } });
       await cols.folders.deleteOne({ _id: fid });
+      await tomb(cols, 'folder', [fid]);
     }
   } catch (e) { console.warn('[favorites] mongo folder delete failed:', e.message); }
 }
@@ -785,7 +888,10 @@ async function addSeries(t) {
   persist();
   try {
     const cols = await favCols();
-    if (cols) await cols.series.updateOne({ _id: fav.id }, { $set: sfavToDoc(fav) }, { upsert: true });
+    if (cols) {
+      await cols.series.updateOne({ _id: fav.id }, { $set: sfavToDoc(fav) }, { upsert: true });
+      await untomb(cols, 'series', [fav.id]);
+    }
   } catch (e) { console.warn('[favorites] mongo upsert (series) failed:', e.message); }
 }
 
@@ -795,7 +901,10 @@ async function removeSeries(torrentId) {
   persist();
   try {
     const cols = await favCols();
-    if (cols) await cols.series.deleteOne({ _id: Number(torrentId) });
+    if (cols) {
+      await cols.series.deleteOne({ _id: Number(torrentId) });
+      await tomb(cols, 'series', [Number(torrentId)]);
+    }
   } catch (e) { console.warn('[favorites] mongo delete (series) failed:', e.message); }
 }
 
@@ -830,7 +939,7 @@ async function listSeries() {
 // junto con la de Finanzas). Best-effort: sin Mongo queda como estaba.
 async function syncNow() {
   await ensure();
-  await reconcile();
+  return reconcile();
 }
 
 module.exports = {

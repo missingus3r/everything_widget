@@ -3988,6 +3988,20 @@ window.api.sfavs.ids().then((ids) => {
   if (ezFavsMode && ezShown.length) renderEzRows(ezShown);
 }).catch(() => {});
 
+// Favoritos cambiados desde otro dispositivo (Nexus Mobile escribe en Mongo y
+// main los reconcilia cada 5 min): se refrescan los ♥ y las vistas abiertas.
+window.api.onFavsSynced(async () => {
+  await refreshFavKeys();
+  if (yifyFavsMode) loadYifyFavs();
+  else {
+    if (yifyShown.length) renderYifyMovies(yifyShown);
+    if (limeShown.length) renderLimeCards(limeShown);
+  }
+  try { ezFavIds = new Set(await window.api.sfavs.ids()); } catch {}
+  if (ezFavsMode) loadEzFavs();
+  refreshTvmaze();
+});
+
 // ── TVMaze: próximos episodios de las series favoritas ─────────
 // Cruza los favoritos EZTV (imdb id en la base) con TVMaze. Mini cards en una
 // sola fila con scroll horizontal; solo series con próximo episodio a estrenar
@@ -5046,6 +5060,7 @@ function forecastDuration(ms) {
 
 function renderAIWeeklyForecast(now = Date.now()) {
   const percent = n => n.toLocaleString('es-UY', { maximumFractionDigits: 1 });
+  const published = { at: now };   // lo mismo que se pinta, para Nexus Mobile (pc_status)
   const rows = [['claude', 'Claude', 'weekAll'], ['codex', 'Codex', 'weekly']].map(([id, name, section]) => {
     const quota = aiData?.[id]?.[section];
     const result = AIUsageForecast.project(aiWeeklyHistory[id], now, {
@@ -5090,8 +5105,10 @@ function renderAIWeeklyForecast(now = Date.now()) {
         ${result.reductionPct ? `<p class="ai-forecast-outcome">Bajá el ritmo un ${result.reductionPct}% para llegar.</p>` : ''}
         <p class="ai-forecast-note" title="${escapeHtml(date)}">Reinicia en ${forecastDuration(result.remainingMs)} · ${escapeHtml(date)}</p>`;
     }
+    published[id] = { ...result, label: labels[result.status] };
     return `<div class="ai-forecast-row ${result.status}" data-provider="${id}"><div class="ai-forecast-head"><b>${name}</b><span class="ai-forecast-status">${labels[result.status]}</span></div>${details}</div>`;
   }).join('');
+  try { window.api.publishForecast(published); } catch {}
   return `<div class="ai-forecast-title"><div class="ai-provider">Previsión semanal</div><span>Estimación</span></div>
     ${rows}
     ${aiForecastStorageAvailable ? '' : '<p class="ai-forecast-note">Historial temporal: no se pudo guardar en este dispositivo.</p>'}`;

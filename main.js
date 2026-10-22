@@ -41,6 +41,8 @@ const { fetchDeals } = require('./games');
 const { fetchGithub } = require('./github');
 const { fetchTvByImdb, fetchMovieByImdb, fetchMovieByTmdbId } = require('./tmdb');
 const { fetchQuotes, DEFAULT_SYMBOLS } = require('./stocks');
+const pcPublish = require('./pcPublish');
+const netUsage = require('./netUsage');
 
 // Key guardada en API Keys por nombre: GitHub, TMDB, Finnhub, ElevenLabs… El
 // match es tolerante (alias y variantes como "ElevenLabs Api" o "The Movie
@@ -54,6 +56,7 @@ let tray = null;
 let latestUsage = null;
 let latestCodex = null;
 let latestEleven = null;
+let latestForecast = null;   // previsión semanal tal como la pinta el renderer
 let isQuitting = false;
 const startHidden = process.argv.includes('--hidden');
 
@@ -890,6 +893,7 @@ ipcMain.handle('reset-speedtest-history', () => speedtestHistory.reset());
 ipcMain.on('usage-updated',        (_e, data) => { latestUsage  = data; updateTray(); });
 ipcMain.on('codex-usage-updated',  (_e, data) => { latestCodex  = data; updateTray(); });
 ipcMain.on('eleven-usage-updated', (_e, data) => { latestEleven = data; updateTray(); });
+ipcMain.on('pc-status:forecast',   (_e, data) => { latestForecast = data; });
 
 // ── API keys ───────────────────────────────────────────────────
 // La key de ElevenLabs se busca con el mismo match tolerante que el resto
@@ -911,6 +915,7 @@ ipcMain.handle('save-api-keys', (_event, keys) => {
   if (eleven) patch.elevenLabsApiKey = eleven;
   else if (cfg.elevenLabsApiKey) patch.elevenLabsApiKey = '';
   saveConfig(patch);
+  pcPublish.publishKeys(list);   // las que usa Nexus Mobile (TMDB, GitHub, Finnhub)
   return list;
 });
 
@@ -942,10 +947,11 @@ async function syncDatabases() {
   if (dbSyncRunning) return;
   dbSyncRunning = true;
   let st = null;
+  let favs = null;
   try {
-    [st] = await Promise.all([
+    [st, favs] = await Promise.all([
       finances.syncNow().catch(() => null),
-      favorites.syncNow().catch(() => {}),
+      favorites.syncNow().catch(() => null),
       limeArchive.syncNow().catch(() => {}),
       yifyArchive.syncNow().catch(() => {}),
       eztvArchive.syncNow().catch(() => {}),
@@ -961,6 +967,20 @@ async function syncDatabases() {
   if (win) {
     try { win.webContents.send('db-synced', { ok: !!(st && st.ok), at: Date.now() }); } catch {}
   }
+  notifyFavsChanged(favs);
+}
+
+// Favoritos compartidos con Nexus Mobile: el teléfono escribe directo en
+// Mongo, así que además de la pasada grande cada 15 min los favoritos se
+// reconcilian cada 5 (es barata: baja docs sin portadas). Si algo cambió, el
+// renderer repinta los ♥ y las vistas de Favoritos.
+const FAVS_SYNC_INTERVAL_MS = 5 * 60 * 1000;
+function notifyFavsChanged(r) {
+  if (!r || !r.changed || !win) return;
+  try { win.webContents.send('favs-synced', { at: Date.now() }); } catch {}
+}
+async function syncFavorites() {
+  notifyFavsChanged(await favorites.syncNow().catch(() => null));
 }
 ipcMain.handle('finances:list-expenses', () => finances.listExpenses());
 ipcMain.handle('finances:add-expense', (_e, payload) => finances.addExpense(payload));
@@ -1076,6 +1096,24 @@ app.whenReady().then(() => {
   transcode.sweep();   // ídem para segmentos HLS huérfanos
   syncDatabases();     // sync inicial de las bases (aditivo, best-effort)
   setInterval(syncDatabases, DB_SYNC_INTERVAL_MS);
+  setInterval(syncFavorites, FAVS_SYNC_INTERVAL_MS).unref();
+  // Nexus Mobile: estado del PC, keys compartidas e índices que usa el teléfono.
+  pcPublish.ensureIndexes();
+  pcPublish.publishKeys(loadConfig().apiKeys);
+  pcPublish.start({
+    getState: async () => {
+      const cfg = loadConfig();
+      return {
+        system: await systemStats.snapshot(),
+        net: netUsage.read(),
+        speedtest: speedtestHistory.read(),
+        ai: { claude: latestUsage, codex: latestCodex, eleven: latestEleven, local: await readLocalUsage().catch(() => null) },
+        forecast: latestForecast,
+        stockSymbols: Array.isArray(cfg.stockSymbols) && cfg.stockSymbols.length ? cfg.stockSymbols : DEFAULT_SYMBOLS,
+        now: Date.now(),
+      };
+    },
+  });
   archiveCrawl.start();   // backfill de los catálogos, en segundo plano
   app.on('activate', () => { if (!win) createWindow(); });
 });
