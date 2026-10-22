@@ -89,9 +89,16 @@ async function connect() {
       serverSelectionTimeoutMS: CONNECT_TIMEOUT_MS,
       connectTimeoutMS: CONNECT_TIMEOUT_MS,
     });
-    await c.connect();
-    // Force server selection now so an unreachable cluster fails here, not later.
-    await c.db(DB_NAME).command({ ping: 1 });
+    try {
+      await c.connect();
+      // Force server selection now so an unreachable cluster fails here, not later.
+      await c.db(DB_NAME).command({ ping: 1 });
+    } catch (err) {
+      // A failed client still holds monitor sockets/timers; callers retry
+      // (pcPublish every 2 min), so close it instead of leaking one per try.
+      c.close().catch(() => {});
+      throw err;
+    }
     client = c;
     database = watchDb(c.db(DB_NAME));
     console.log('[finances/mongo] connected');
