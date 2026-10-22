@@ -17,6 +17,7 @@
 const path = require('path');
 const mongo = require('./finances/mongo');
 const sqliteFile = require('./sqliteFile');
+const { ENRICH_FIELDS, enrichmentPatch } = require('./limeEnrich');
 
 const DB_PATH = path.join(__dirname, 'lime.sqlite');
 const WASM_PATH = path.join(__dirname, 'node_modules', 'sql.js', 'dist');
@@ -257,6 +258,31 @@ function localMaxAddedAt() {
   return m;
 }
 
+// Completa en Mongo el enriquecimiento que solo quedó en el espejo (ver
+// limeEnrich.js): pide los docs a los que les falta algún campo, los cruza con
+// lo local y hace $set solo de lo que falta. Después de la primera pasada
+// quedan solo los releases que tampoco acá tienen ficha, así que es barato.
+async function pushEnrichment(c) {
+  const proj = Object.fromEntries(ENRICH_FIELDS.map((k) => [k, 1]));
+  const remote = await c.find({ $or: ENRICH_FIELDS.map((k) => ({ [k]: null })) }, { projection: proj }).toArray();
+  if (!remote.length) return 0;
+  // De a tandas: SQLite limita las variables de un IN (…).
+  const local = new Map();
+  for (let i = 0; i < remote.length; i += 500) {
+    for (const [id, r] of await rowsByIds(remote.slice(i, i + 500).map((d) => d._id))) local.set(id, r);
+  }
+  const ops = [];
+  for (const d of remote) {
+    const t = local.get(Number(d._id));
+    const patch = t && enrichmentPatch(releaseToDoc(t), d);
+    if (patch) ops.push({ updateOne: { filter: { _id: d._id }, update: { $set: patch } } });
+  }
+  for (let i = 0; i < ops.length; i += 1000) {
+    await c.bulkWrite(ops.slice(i, i + 1000), { ordered: false });
+  }
+  return ops.length;
+}
+
 // Sync bidireccional aditivo con Mongo (arranque + periódico). Incremental:
 // sube lo local más nuevo que lo que Mongo ya tiene y baja lo remoto más
 // nuevo que lo local, ambos con margen de solapamiento; si un lado está
@@ -281,6 +307,7 @@ async function syncNow() {
         updateOne: { filter: { _id: t.id }, update: { $setOnInsert: releaseToDoc(t) }, upsert: true },
       })), { ordered: false });
     }
+    const enriched = await pushEnrichment(c);
 
     // Pull: lo remoto que falta acá (INSERT OR IGNORE — lo local no se pisa).
     const localMax = localMaxAddedAt();
@@ -312,7 +339,7 @@ async function syncNow() {
       }
       persist();
     }
-    console.log(`[limeArchive] sync: ${toPush.length} subidos, ${docs.length} bajados`);
+    console.log(`[limeArchive] sync: ${toPush.length} subidos, ${docs.length} bajados, ${enriched} enriquecidos en Mongo`);
   } catch (e) {
     console.warn('[limeArchive] mongo sync failed, SQLite-only:', e.message);
   }
