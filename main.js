@@ -55,6 +55,7 @@ let win = null;
 let tray = null;
 let latestUsage = null;
 let latestCodex = null;
+let latestAgy = null;
 let latestEleven = null;
 let latestForecast = null;   // previsión semanal tal como la pinta el renderer
 let isQuitting = false;
@@ -249,13 +250,13 @@ function runFetcher(scriptName) {
 }
 
 async function fetchAIUsage() {
-  const [claude, codex, eleven, local] = await Promise.all([
+  const [claude, codex, agy, eleven] = await Promise.all([
     runFetcher('claudeFetcher.js'),
     runFetcher('codexFetcher.js'),
+    runFetcher('agyFetcher.js'),
     runFetcher('elevenLabsFetcher.js'),
-    readLocalUsage().catch(() => null),
   ]);
-  return { claude, codex, eleven, local, available: true };
+  return { claude, codex, agy, eleven, available: true };
 }
 
 // ── Tray ───────────────────────────────────────────────────────
@@ -276,6 +277,13 @@ function updateTray() {
   const cx5 = latestCodex?.session5h?.pct;
   const cxw = latestCodex?.weekly?.pct;
   const elc = latestEleven?.characters;
+  // Antigravity: one used-% per quota group, the 5h one when it's the fuller.
+  const agyRows = [['Gemini', latestAgy?.gemini], ['Claude/GPT', latestAgy?.partner], ['Argon', latestAgy?.argon]]
+    .filter(([, g]) => g && (g.weekly || g.h5))
+    .map(([name, g]) => {
+      const q = (g.h5?.pct ?? -1) > (g.weekly?.pct ?? -1) ? ['5h', g.h5] : ['Week', g.weekly];
+      return `${name} ${q[0]}: ${q[1].pct}%`;
+    });
   const elPct = elc?.pct;
 
   tray.setImage(nativeImage.createFromBuffer(buildTrayIcon(s ?? null, w ?? null)));
@@ -291,6 +299,10 @@ function updateTray() {
     tipLines.push('— Codex —');
     if (cx5 != null) tipLines.push(`5h limit: ${cx5}%`);
     if (cxw != null) tipLines.push(`Weekly: ${cxw}%`);
+  }
+  if (agyRows.length) {
+    tipLines.push('— Antigravity —');
+    tipLines.push(...agyRows);
   }
   if (elPct != null) {
     tipLines.push('— ElevenLabs —');
@@ -310,6 +322,11 @@ function updateTray() {
       { label: 'Codex', enabled: false },
       ...(cx5 != null ? [{ label: `  5h limit  ${cx5}%`, enabled: false }] : []),
       ...(cxw != null ? [{ label: `  Weekly  ${cxw}%`, enabled: false }] : []),
+    ] : []),
+    ...(agyRows.length ? [
+      { type: 'separator' },
+      { label: `Antigravity${latestAgy?.account?.plan ? `  ·  ${latestAgy.account.plan}` : ''}`, enabled: false },
+      ...agyRows.map((r) => ({ label: `  ${r.replace(': ', '  ')}`, enabled: false })),
     ] : []),
     ...(elPct != null ? [
       { type: 'separator' },
@@ -892,6 +909,7 @@ ipcMain.handle('reset-speedtest-history', () => speedtestHistory.reset());
 // ── Tray usage push (from renderer) ────────────────────────────
 ipcMain.on('usage-updated',        (_e, data) => { latestUsage  = data; updateTray(); });
 ipcMain.on('codex-usage-updated',  (_e, data) => { latestCodex  = data; updateTray(); });
+ipcMain.on('agy-usage-updated',    (_e, data) => { latestAgy    = data; updateTray(); });
 ipcMain.on('eleven-usage-updated', (_e, data) => { latestEleven = data; updateTray(); });
 ipcMain.on('pc-status:forecast',   (_e, data) => { latestForecast = data; });
 
@@ -1107,7 +1125,7 @@ app.whenReady().then(() => {
         system: await systemStats.snapshot(),
         net: netUsage.read(),
         speedtest: speedtestHistory.read(),
-        ai: { claude: latestUsage, codex: latestCodex, eleven: latestEleven, local: await readLocalUsage().catch(() => null) },
+        ai: { claude: latestUsage, codex: latestCodex, agy: latestAgy, eleven: latestEleven, local: await readLocalUsage().catch(() => null) },
         forecast: latestForecast,
         stockSymbols: Array.isArray(cfg.stockSymbols) && cfg.stockSymbols.length ? cfg.stockSymbols : DEFAULT_SYMBOLS,
         now: Date.now(),

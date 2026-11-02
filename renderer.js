@@ -4863,6 +4863,17 @@ function parseCodexResetDate(resetStr, referenceTime) {
   return target;
 }
 
+// Antigravity /usage gives a relative "Refreshes in 167h 53m", already turned
+// into minutes by the fetcher; untouched quotas ("Quota available") have none.
+const AGY_GROUPS = [['gemini', 'Gemini'], ['partner', 'Claude/GPT'], ['argon', 'Argon']];
+function attachAgyResetDates(agy, fetchedAt) {
+  for (const [key] of AGY_GROUPS) {
+    for (const q of [agy?.[key]?.h5, agy?.[key]?.weekly]) {
+      if (q?.resetInMin) q.resetAt = new Date(fetchedAt.getTime() + q.resetInMin * 60000);
+    }
+  }
+}
+
 function attachResetDates(data, parser, sections, fetchedAt) {
   if (!data) return;
   for (const k of sections) {
@@ -4903,17 +4914,6 @@ function fmtUSD(n) {
   return `$${n.toFixed(2)}`;
 }
 
-function localApiCost(t) {
-  if (!t) return 0;
-  const p = pricing.claude;
-  return (
-    (t.input || 0)       * p.perMillionInput +
-    (t.output || 0)      * p.perMillionOutput +
-    (t.cacheRead || 0)   * p.perMillionCacheRead +
-    (t.cacheCreate || 0) * p.perMillionCacheCreate
-  ) / 1e6;
-}
-
 function planWeeklyCost(plan, pct) {
   if (!plan || pct == null) return null;
   const eq = pricing.planWeeklyEquivalent[plan];
@@ -4941,82 +4941,6 @@ function aiRow(label, pct, meta, countdownId) {
     </div>`;
 }
 
-function renderLocalTokens(local) {
-  if (!local) return '';
-  const tokenTotal = (t) => (t.input || 0) + (t.output || 0) + (t.cacheRead || 0) + (t.cacheCreate || 0);
-
-  const stackedBar = (t) => {
-    const total = tokenTotal(t);
-    if (total === 0) return `<div class="local-stacked-bar empty"></div>`;
-    const inPct    = ((t.input || 0)  / total) * 100;
-    const outPct   = ((t.output || 0) / total) * 100;
-    const cachePct = (((t.cacheRead || 0) + (t.cacheCreate || 0)) / total) * 100;
-    return `
-      <div class="local-stacked-bar">
-        <div class="seg seg-in"    style="width:${inPct}%"></div>
-        <div class="seg seg-out"   style="width:${outPct}%"></div>
-        <div class="seg seg-cache" style="width:${cachePct}%"></div>
-      </div>`;
-  };
-
-  const legend = (t) => `
-    <div class="local-legend">
-      <span class="leg"><i class="dot dot-in"></i>In <b>${fmtNum(t.input || 0)}</b></span>
-      <span class="leg"><i class="dot dot-out"></i>Out <b>${fmtNum(t.output || 0)}</b></span>
-      <span class="leg"><i class="dot dot-cache"></i>Cache <b>${fmtNum((t.cacheRead || 0) + (t.cacheCreate || 0))}</b></span>
-      <span class="leg leg-msgs">${t.messages || 0} msgs</span>
-    </div>`;
-
-  const row = (label, t) => `
-    <div class="local-row">
-      <div class="local-row-head">
-        <span class="local-row-label">${label}</span>
-        <span class="local-row-total">${fmtNum(tokenTotal(t))}</span>
-      </div>
-      ${stackedBar(t)}
-      ${legend(t)}
-    </div>`;
-
-  const sparkline = () => {
-    if (!Array.isArray(local.daily) || !local.daily.length) return '';
-    const totals = local.daily.map(d => tokenTotal(d.totals));
-    const maxT   = Math.max(1, ...totals);
-    const maxM   = Math.max(1, ...local.daily.map(d => d.totals.messages || 0));
-    const lastIdx = local.daily.length - 1;
-    return `
-      <div class="local-spark-title">Últimos 7 días · tokens · mensajes</div>
-      <div class="local-sparkline">
-        ${local.daily.map((d, i) => {
-          const t   = totals[i];
-          const msg = d.totals.messages || 0;
-          const hT  = t   > 0 ? Math.max(3, (t   / maxT) * 100) : 0;
-          const hM  = msg > 0 ? Math.max(3, (msg / maxM) * 100) : 0;
-          const isToday = i === lastIdx;
-          return `
-            <div class="spark-col${isToday ? ' spark-today' : ''}" title="${d.label} ${d.date}&#10;${fmtNum(t)} tokens · ${msg} msgs">
-              <div class="spark-track">
-                <div class="spark-bar spark-bar-tok" style="height:${hT}%"></div>
-                <div class="spark-bar spark-bar-msg" style="height:${hM}%"></div>
-              </div>
-              <span class="spark-label">${d.label[0]}</span>
-            </div>`;
-        }).join('')}
-      </div>`;
-  };
-
-  const weekCost  = localApiCost(local.week);
-
-  return `
-    <div class="local-section">
-      ${row('7 días', local.week || {})}
-      ${sparkline()}
-      <div class="api-cost" title="Costo API estimado para estos tokens al pricing de lista de Sonnet.">
-        7d ≈ <span class="api-cost-value">${fmtUSD(weekCost)}</span>
-        <span class="api-cost-suffix">API</span>
-      </div>
-    </div>`;
-}
-
 // Store only quota percentages and timestamps, separately for each provider.
 const AI_FORECAST_STORAGE_KEY = 'nexus.ai-weekly-forecast.v1';
 let aiWeeklyHistory = {};
@@ -5024,21 +4948,39 @@ let aiForecastReadFailed = false;
 let aiForecastFetchedAt = 0;
 let aiForecastStorageAvailable = true;
 let aiForecastRenderedMinute = -1;
+
+// Weekly quotas with a forecast row; `quota` picks the reading out of aiData.
+// Antigravity has one weekly quota per model group.
+const AI_FORECAST_QUOTAS = [
+  { id: 'claude', name: 'Claude', quota: d => d?.claude?.weekAll },
+  { id: 'codex',  name: 'Codex',  quota: d => d?.codex?.weekly },
+  ...AGY_GROUPS.map(([key, name]) => ({
+    id: `agy-${key}`, name: `Antigravity · ${name}`, quota: d => d?.agy?.[key]?.weekly, agy: true,
+  })),
+];
 try {
   const saved = JSON.parse(localStorage.getItem(AI_FORECAST_STORAGE_KEY) || '{}');
-  for (const id of ['claude', 'codex']) aiWeeklyHistory[id] = AIUsageForecast.normalize(saved?.[id]);
+  for (const { id } of AI_FORECAST_QUOTAS) aiWeeklyHistory[id] = AIUsageForecast.normalize(saved?.[id]);
 } catch { aiForecastStorageAvailable = false; }
 
 function captureAIWeeklySamples(fetchedAt) {
-  for (const [id, section] of [['claude', 'weekAll'], ['codex', 'weekly']]) {
-    const provider = aiData?.[id];
-    const quota = provider?.[section];
-    if (!aiData?.available || provider?.error || !quota) continue;
-    // The existing parsers also accept date-only strings; a quota forecast
-    // needs a real reset time, not their default midnight.
-    const hasTime = /\d{1,2}(?::\d{2})?\s*(am|pm)\b|\d{1,2}:\d{2}/i.test(quota.resets || '');
-    if (!hasTime) continue;
-    aiWeeklyHistory[id] = AIUsageForecast.recordSample(aiWeeklyHistory[id], {
+  for (const q of AI_FORECAST_QUOTAS) {
+    const quota = q.quota(aiData);
+    if (!aiData?.available || !quota) continue;
+    if (q.agy) {
+      // "Refreshes in 167h 53m" only has minute precision and is read a few
+      // seconds apart each time; snap to the series' reset so the readings
+      // stay one series (normalize() splits on a 1-minute difference).
+      if (!quota.resetAt) continue;
+      const prev = aiWeeklyHistory[q.id]?.at(-1)?.resetAt;
+      if (prev && Math.abs(prev - quota.resetAt.getTime()) < 5 * 60000) quota.resetAt = new Date(prev);
+    } else {
+      // The existing parsers also accept date-only strings; a quota forecast
+      // needs a real reset time, not their default midnight.
+      const hasTime = /\d{1,2}(?::\d{2})?\s*(am|pm)\b|\d{1,2}:\d{2}/i.test(quota.resets || '');
+      if (!hasTime) continue;
+    }
+    aiWeeklyHistory[q.id] = AIUsageForecast.recordSample(aiWeeklyHistory[q.id], {
       at: fetchedAt.getTime(), pct: quota.pct, resetAt: quota.resetAt?.getTime(),
     });
   }
@@ -5061,21 +5003,29 @@ function forecastDuration(ms) {
 function renderAIWeeklyForecast(now = Date.now()) {
   const percent = n => n.toLocaleString('es-UY', { maximumFractionDigits: 1 });
   const published = { at: now };   // lo mismo que se pinta, para Nexus Mobile (pc_status)
-  const rows = [['claude', 'Claude', 'weekAll'], ['codex', 'Codex', 'weekly']].map(([id, name, section]) => {
-    const quota = aiData?.[id]?.[section];
-    const result = AIUsageForecast.project(aiWeeklyHistory[id], now, {
-      maxAgeMs: Math.max(30 * 60000, AI_INTERVAL_MS * 2),
-      available: !aiForecastReadFailed && !!aiData?.available && !!quota && !aiData?.[id]?.error
-        && aiWeeklyHistory[id]?.at(-1)?.at === aiForecastFetchedAt,
-    });
+  // Antigravity rows only once agy has answered at least once.
+  const quotas = AI_FORECAST_QUOTAS.filter(q => !q.agy || aiData?.agy || aiWeeklyHistory[q.id]?.length);
+  const rows = quotas.map((q) => {
+    const { id, name } = q;
+    const quota = q.quota(aiData);
+    const fresh = !aiForecastReadFailed && !!aiData?.available && !!quota;
+    // An untouched agy quota prints "Quota available" and no reset at all.
+    const result = fresh && q.agy && !quota.resetAt && !quota.pct
+      ? { status: 'idle', pct: 0 }
+      : AIUsageForecast.project(aiWeeklyHistory[id], now, {
+        maxAgeMs: Math.max(30 * 60000, AI_INTERVAL_MS * 2),
+        available: fresh && aiWeeklyHistory[id]?.at(-1)?.at === aiForecastFetchedAt,
+      });
     const labels = {
-      unavailable: 'Sin datos semanales', resetting: 'Reinicio pendiente',
+      idle: 'Sin uso', unavailable: 'Sin datos semanales', resetting: 'Reinicio pendiente',
       stale: 'Lectura desactualizada', exhausted: 'Cupo agotado',
       learning: 'Reuniendo datos', risk: 'No llegás a este ritmo',
       tight: 'Llegás justo', safe: 'Llegás con margen',
     };
     let details;
-    if (result.status === 'unavailable') {
+    if (result.status === 'idle') {
+      details = '<p class="ai-forecast-note">Cupo intacto esta semana. La fecha de reinicio aparece cuando se empieza a usar.</p>';
+    } else if (result.status === 'unavailable') {
       details = '<p class="ai-forecast-note">Esperando porcentaje y fecha de reinicio.</p>';
     } else if (result.status === 'resetting') {
       details = '<p class="ai-forecast-note">El reinicio ya pasó. Esperando una nueva lectura.</p>';
@@ -5137,6 +5087,7 @@ function aiSkeletonHTML() {
     <div class="ai-col">
       ${skBlock(3)}
       ${skBlock(2)}
+      ${skBlock(3)}
     </div>
     <div class="ai-col">
       <span class="sk sk-provider"></span>
@@ -5151,6 +5102,7 @@ const AI_LOGOS = {
   anthropic: 'M17.3041 3.541h-3.6718l6.696 16.918H24Zm-10.6082 0L0 20.459h3.7442l1.3693-3.5527h7.0052l1.3693 3.5528h3.7442L10.5363 3.5409Zm-.3712 10.2232 2.2914-5.9456 2.2914 5.9456Z',
   openai: 'M22.2819 9.8211a5.9847 5.9847 0 0 0-.5157-4.9108 6.0462 6.0462 0 0 0-6.5098-2.9A6.0651 6.0651 0 0 0 4.9807 4.1818a5.9847 5.9847 0 0 0-3.9977 2.9 6.0462 6.0462 0 0 0 .7427 7.0966 5.98 5.98 0 0 0 .511 4.9107 6.051 6.051 0 0 0 6.5146 2.9001A5.9847 5.9847 0 0 0 13.2599 24a6.0557 6.0557 0 0 0 5.7718-4.2058 5.9894 5.9894 0 0 0 3.9977-2.9001 6.0557 6.0557 0 0 0-.7475-7.0729zm-9.022 12.6081a4.4755 4.4755 0 0 1-2.8764-1.0408l.1419-.0804 4.7783-2.7582a.7948.7948 0 0 0 .3927-.6813v-6.7369l2.02 1.1686a.071.071 0 0 1 .038.052v5.5826a4.504 4.504 0 0 1-4.4945 4.4944zm-9.6607-4.1254a4.4708 4.4708 0 0 1-.5346-3.0137l.142.0852 4.783 2.7582a.7712.7712 0 0 0 .7806 0l5.8428-3.3685v2.3324a.0804.0804 0 0 1-.0332.0615L9.74 19.9502a4.4992 4.4992 0 0 1-6.1408-1.6464zM2.3408 7.8956a4.485 4.485 0 0 1 2.3655-1.9728V11.6a.7664.7664 0 0 0 .3879.6765l5.8144 3.3543-2.0201 1.1685a.0757.0757 0 0 1-.071 0l-4.8303-2.7865A4.504 4.504 0 0 1 2.3408 7.872zm16.5963 3.8558L13.1038 8.364 15.1192 7.2a.0757.0757 0 0 1 .071 0l4.8303 2.7913a4.4944 4.4944 0 0 1-.6765 8.1042v-5.6772a.79.79 0 0 0-.407-.667zm2.0107-3.0231l-.142-.0852-4.7735-2.7818a.7759.7759 0 0 0-.7854 0L9.409 9.2297V6.8974a.0662.0662 0 0 1 .0284-.0615l4.8303-2.7866a4.4992 4.4992 0 0 1 6.6802 4.66zM8.3065 12.863l-2.02-1.1638a.0804.0804 0 0 1-.038-.0567V6.0742a4.4992 4.4992 0 0 1 7.3757-3.4537l-.142.0805L8.704 5.459a.7948.7948 0 0 0-.3927.6813zm1.0976-2.3654l2.602-1.4998 2.6069 1.4998v2.9994l-2.5974 1.4997-2.6067-1.4997Z',
   elevenlabs: 'M4.6035 0v24h4.9317V0zm9.8613 0v24h4.9317V0z',
+  gemini: 'M11.04 19.32Q12 21.51 12 24q0-2.49.93-4.68.96-2.19 2.58-3.81t3.81-2.55Q21.51 12 24 12q-2.49 0-4.68-.93a12.3 12.3 0 0 1-3.81-2.58 12.3 12.3 0 0 1-2.58-3.81Q12 2.49 12 0q0 2.49-.96 4.68-.93 2.19-2.55 3.81a12.3 12.3 0 0 1-3.81 2.58Q2.49 12 0 12q2.49 0 4.68.96 2.19.93 3.81 2.55t2.55 3.81',
 };
 
 function aiLogo(brand) {
@@ -5225,6 +5177,18 @@ function renderAI() {
     providerBlocks.push(`<div class="ai-stack-item">${parts.join('')}</div>`);
   }
 
+  const agy = aiData.agy;
+  if (agy) {
+    const plan = agy.account?.plan;
+    const parts = [`<div class="ai-provider">${aiLogo('gemini')}Antigravity${plan ? ' · ' + escapeHtml(plan) : ''}${aiModelTag(agy.model, ' - ')}</div>`];
+    for (const [key, name] of AGY_GROUPS) {
+      const g = agy[key];
+      if (g?.h5)     parts.push(aiRow(`${name} · 5h`,      g.h5.pct,     '', g.h5.resetAt     ? `cd-agy-${key}-5h`   : null));
+      if (g?.weekly) parts.push(aiRow(`${name} · semanal`, g.weekly.pct, '', g.weekly.resetAt ? `cd-agy-${key}-week` : null));
+    }
+    providerBlocks.push(`<div class="ai-stack-item">${parts.join('')}</div>`);
+  }
+
   const el11 = aiData.eleven;
   if (el11 && el11.characters && el11.characters.pct != null) {
     const parts = [`<div class="ai-provider">${aiLogo('elevenlabs')}ElevenLabs${el11.tier ? ' · ' + escapeHtml(el11.tier) : ''}</div>`];
@@ -5240,15 +5204,13 @@ function renderAI() {
     providerBlocks.push(`<div class="ai-stack-item">${parts.join('')}</div>`);
   }
 
-  // Right column: Local Tokens, followed by the weekly quota forecast.
+  // Right column: the weekly quota forecast.
   const cols = [];
   if (providerBlocks.length) cols.push(`<div class="ai-col">${providerBlocks.join('')}</div>`);
-  const localTokens = aiData.local
-    ? `<div class="ai-provider">Local Tokens</div>${renderLocalTokens(aiData.local)}` : '';
-  cols.push(`<div class="ai-col">${localTokens}<section class="ai-forecast" id="ai-weekly-forecast" aria-label="Previsión semanal de uso de IA"></section></div>`);
+  cols.push(`<div class="ai-col"><section class="ai-forecast" id="ai-weekly-forecast" aria-label="Previsión semanal de uso de IA"></section></div>`);
 
   if (!cols.length) {
-    el.innerHTML = `<div class="ai-loading">Sin datos de uso (¿logueaste claude/codex?)</div>`;
+    el.innerHTML = `<div class="ai-loading">Sin datos de uso (¿logueaste claude/codex/agy?)</div>`;
   } else {
     el.innerHTML = cols.join('');
   }
@@ -5291,6 +5253,10 @@ function tickCountdowns() {
   updateSection('claude', aiData.claude, 'extra',   'cd-extra',   false);
   updateSection('codex',  aiData.codex,  'session5h', 'cd-codex-5h',   true);
   updateSection('codex',  aiData.codex,  'weekly',    'cd-codex-week', false);
+  for (const [key] of AGY_GROUPS) {
+    updateSection(`agy-${key}`, aiData.agy?.[key], 'h5',     `cd-agy-${key}-5h`,   false);
+    updateSection(`agy-${key}`, aiData.agy?.[key], 'weekly', `cd-agy-${key}-week`, false);
+  }
 
   const el11 = aiData.eleven;
   if (el11?.resetUnix) {
@@ -5326,6 +5292,7 @@ async function refreshAI() {
     aiForecastFetchedAt = fetchedAt.getTime();
     attachResetDates(aiData.claude, parseResetDate,      ['session', 'weekAll', 'extra'], fetchedAt);
     attachResetDates(aiData.codex,  parseCodexResetDate, ['session5h', 'weekly'],         fetchedAt);
+    attachAgyResetDates(aiData.agy, fetchedAt);
     captureAIWeeklySamples(fetchedAt);
   } catch {
     aiForecastReadFailed = true;
@@ -5339,6 +5306,7 @@ async function refreshAI() {
   if (aiData) {
     if (aiData.claude) window.api.sendUsage(aiData.claude);
     if (aiData.codex)  window.api.sendCodexUsage(aiData.codex);
+    if (aiData.agy)    window.api.sendAgyUsage(aiData.agy);
     if (aiData.eleven && !aiData.eleven.error) window.api.sendElevenUsage(aiData.eleven);
   }
   lastAIRefreshAt = Date.now();

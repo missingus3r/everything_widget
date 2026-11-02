@@ -26,7 +26,7 @@ test('buildPcStatus arma el documento del PC con lo que recibe', () => {
 
 test('buildPcStatus sin datos de AI deja todo en null', () => {
   const doc = buildPcStatus({ now: 1 });
-  assert.deepEqual(doc.ai, { claude: null, codex: null, eleven: null, local: null, forecast: null });
+  assert.deepEqual(doc.ai, { claude: null, codex: null, agy: null, eleven: null, local: null, forecast: null });
   assert.deepEqual(doc.net, { usage: null, speedtest: null });
   assert.equal(doc.system, null);
   assert.deepEqual(doc.stockSymbols, []);

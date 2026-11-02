@@ -15,7 +15,8 @@ navegador de **torrents YIFY**.
 - **Clima:** condiciones actuales por ubicación (Open-Meteo).
 - **Speedtest:** medición de velocidad con historial.
 - **Mercado:** cotizaciones y tipo de cambio.
-- **Uso de IA:** consumo y costo estimado de Claude, Codex, ElevenLabs y otras APIs.
+- **Uso de IA:** consumo y costo estimado de Claude, Codex, Antigravity (`agy`,
+  cupos de Gemini, Claude/GPT y Argon), ElevenLabs y otras APIs.
 - **Finanzas:** saldos por cuenta, gastos/servicios/suscripciones e ingresos,
   con gráficas y totales convertidos.
 - **Torrents:** últimas películas y búsqueda en YIFY (con filtros, vistas
@@ -24,14 +25,18 @@ navegador de **torrents YIFY**.
 
 ## AI Usage: previsión semanal
 
-Debajo de **Local Tokens**, **Previsión semanal** indica para Claude y Codex si
-el cupo semanal alcanza hasta el próximo reinicio. Muestra uso actual, porcentaje
+En la columna derecha, **Previsión semanal** indica para Claude, Codex y cada
+grupo de Antigravity (Gemini, Claude/GPT, Argon) si el cupo semanal alcanza
+hasta el próximo reinicio. Muestra uso actual, porcentaje
 proyectado al reinicio, margen o tiempo hasta agotar el cupo, ritmo diario y
 presupuesto diario disponible. Si el ritmo es excesivo, sugiere cuánto reducirlo.
 
 La estimación usa los porcentajes semanales y las fechas de reinicio de las
-lecturas existentes de cada proveedor; los tokens locales y los costos estimados
-no se convierten en cupo. Con al menos 30 minutos entre mediciones, calcula el
+lecturas existentes de cada proveedor; los costos estimados no se convierten en
+cupo. Antigravity da el reinicio en forma relativa ("Refreshes in 167h 53m") y solo
+cuando el cupo ya se usó: un grupo sin uso se muestra como **Sin uso**, y las
+lecturas se alinean al reinicio de la serie para que el redondeo al minuto no la
+corte. Con al menos 30 minutos entre mediciones, calcula el
 aumento observado durante las últimas 24 horas disponibles, incluyendo pausas.
 Antes de eso usa el promedio desde el inicio de la semana (ventana de 7 días);
 durante la primera hora, espera a reunir datos suficientes. Es una extrapolación:

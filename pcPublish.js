@@ -1,7 +1,7 @@
 // Estado del PC y keys compartidas para Nexus Mobile (main process).
 //
 // El teléfono no puede leer CPU/RAM/red de esta máquina ni correr `claude` o
-// `codex` para el AI Usage, así que el widget publica un snapshot en Mongo
+// `codex`/`agy` para el AI Usage, así que el widget publica un snapshot en Mongo
 // cada pocos minutos (`pc_status`, un solo documento que se reemplaza). Las
 // keys que el teléfono necesita (TMDB, GitHub, Finnhub) van en `app_keys`
 // para no cargarlas dos veces. También crea los índices de EZTV que el
@@ -25,6 +25,7 @@ function buildPcStatus({ system, net, speedtest, ai, forecast, stockSymbols, now
     ai: {
       claude: a.claude || null,
       codex: a.codex || null,
+      agy: a.agy || null,
       eleven: a.eleven || null,
       local: a.local || null,
       forecast: forecast || null,

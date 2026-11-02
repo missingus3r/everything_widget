@@ -21,6 +21,7 @@ contextBridge.exposeInMainWorld('api', {
 
   sendUsage:       (data) => ipcRenderer.send('usage-updated',        data),
   sendCodexUsage:  (data) => ipcRenderer.send('codex-usage-updated',  data),
+  sendAgyUsage:    (data) => ipcRenderer.send('agy-usage-updated',    data),
   sendElevenUsage: (data) => ipcRenderer.send('eleven-usage-updated', data),
   onRefresh:       (cb)   => ipcRenderer.on('trigger-refresh', cb),
   onDbSynced:      (cb)   => ipcRenderer.on('db-synced', (_e, info) => cb(info)),
